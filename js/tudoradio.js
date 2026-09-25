@@ -5,6 +5,79 @@ class TuRadioCatalogClient {
     this.stationCache = new Map();
     this.staticIndexPromise = null;
     this.staticCatalogAvailable = null;
+    this.dbPromise = null;
+  }
+
+  _openDb() {
+    if (this.dbPromise) return this.dbPromise;
+    if (!window.indexedDB) return Promise.resolve(null);
+    this.dbPromise = new Promise(resolve => {
+      const request = indexedDB.open('world-radio-globe-dials', 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('cities')) db.createObjectStore('cities', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+        if (!db.objectStoreNames.contains('coordinates')) db.createObjectStore('coordinates', { keyPath: 'id' });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = request.onblocked = () => resolve(null);
+    });
+    return this.dbPromise;
+  }
+
+  async _dbRequest(storeName, operation, value = null) {
+    const db = await this._openDb();
+    if (!db) return null;
+    return new Promise(resolve => {
+      try {
+        const mode = operation === 'get' || operation === 'getAll' ? 'readonly' : 'readwrite';
+        const tx = db.transaction(storeName, mode);
+        const store = tx.objectStore(storeName);
+        const request = operation === 'get' ? store.get(value) : operation === 'getAll' ? store.getAll() : store.put(value);
+        let result = null;
+        request.onsuccess = () => { result = operation === 'get' || operation === 'getAll' ? request.result : true; };
+        tx.oncomplete = () => resolve(result);
+        tx.onerror = tx.onabort = () => resolve(null);
+      } catch (_) { resolve(null); }
+    });
+  }
+
+  async _getCityCache(id) { return this._dbRequest('cities', 'get', id); }
+  async _saveCityCache(result) {
+    const id = result?.city?.path?.split('/').pop();
+    if (!id || !Array.isArray(result.stations)) return false;
+    return Boolean(await this._dbRequest('cities', 'put', { ...result, id, savedAt: Date.now() }));
+  }
+
+  async _readNationalCache() {
+    const meta = await this._dbRequest('meta', 'get', 'national');
+    if (!meta?.complete) return null;
+    const cachedCities = await this._dbRequest('cities', 'getAll');
+    if (!Array.isArray(cachedCities) || cachedCities.length < meta.cityCount) return null;
+    const byId = new Map(cachedCities.map(city => [city.id, city]));
+    const cities = (meta.cities || []).map(city => ({ ...city, ...(byId.get(city.path.split('/').pop())?.city || {}) }));
+    const stations = [...byId.values()].flatMap(city => city.stations || []);
+    if (stations.length < meta.stationCount) return null;
+    return { stations, cities, statesLoaded: meta.statesLoaded || new Set(cities.map(city => city.state)).size, cached: true };
+  }
+
+  async _saveNationalMeta(result) {
+    return Boolean(await this._dbRequest('meta', 'put', {
+      key: 'national', complete: true, savedAt: Date.now(), cityCount: result.cities.length,
+      stationCount: result.stations.length, statesLoaded: result.statesLoaded, cities: result.cities
+    }));
+  }
+
+  async hasNationalCache() {
+    const meta = await this._dbRequest('meta', 'get', 'national');
+    return Boolean(meta?.complete);
+  }
+
+  async getSavedNationalCatalog() { return this._readNationalCache(); }
+
+  async getCityCoordinates(id) { return this._dbRequest('coordinates', 'get', id); }
+  async saveCityCoordinates(id, coordinates) {
+    return Boolean(await this._dbRequest('coordinates', 'put', { id, ...coordinates, savedAt: Date.now() }));
   }
 
   async _json(url, options = {}) {
@@ -65,7 +138,7 @@ class TuRadioCatalogClient {
     return this.cityCache.get(code);
   }
 
-  async getCityStations(city, { signal, cache = true } = {}) {
+  async getCityStations(city, { signal, cache = true, forceRefresh = false } = {}) {
     if (!city?.path || !/^\/dials\/cidade\/\d+-[a-z0-9-]+$/i.test(city.path)) throw new Error('Escolha uma cidade do catálogo Dials.');
     const id = city.path.split('/').pop();
     const load = () => this._withStaticFallback(
@@ -77,7 +150,11 @@ class TuRadioCatalogClient {
           : `Não foi possível carregar esta cidade (HTTP ${response.status}).`);
         return response.json();
       }
-    );
+    ).then(async result => { await this._saveCityCache(result); return result; });
+    if (!forceRefresh) {
+      const persisted = await this._getCityCache(id);
+      if (persisted) return persisted;
+    }
     if (!cache) return load();
     if (!this.stationCache.has(city.path)) {
       this.stationCache.set(city.path, load()
@@ -122,20 +199,29 @@ class TuRadioCatalogClient {
     return result;
   }
 
-  async loadNationalCatalog({ onProgress = () => {}, signal = null, concurrency = 4 } = {}) {
+  async loadNationalCatalog({ onProgress = () => {}, signal = null, concurrency = 4, forceRefresh = false } = {}) {
+    if (!forceRefresh) {
+      const cached = await this._readNationalCache();
+      if (cached) {
+        onProgress({ phase: 'cached', completed: cached.cities.length, total: cached.cities.length, stationCount: cached.stations.length, cached: true });
+        return cached;
+      }
+    }
     const states = ['AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'];
     const stateCities = new Map();
     // Probe one API route first. GitHub Pages returns 404 for it, so switch to
     // its prebuilt index before issuing the other 26 state requests.
     let apiProbeError = null;
+    let staticIndexLoaded = false;
     if (location.protocol !== 'file:') {
-      try { stateCities.set('PR', await this.getCities('PR', { signal })); }
+      try { stateCities.set('PR', (await this.getCities('PR', { signal })).map(city => ({ ...city, state: city.state || 'PR' }))); }
       catch (error) {
         if (error.staticCatalogMissing) throw error;
         apiProbeError = error;
       }
       if (apiProbeError?.status === 404 || this.staticCatalogAvailable) {
         const index = await this._staticIndex();
+        staticIndexLoaded = true;
         stateCities.clear();
         for (const uf of states) {
           const cities = index.cities.filter(city => city.state === uf);
@@ -145,13 +231,13 @@ class TuRadioCatalogClient {
         if (!stateCities.size) throw new Error('O índice estático não contém cidades brasileiras.');
       }
     }
-    if (!stateCities.size) {
+    if (!staticIndexLoaded) {
       let stateIndex = 0;
       const stateWorker = async () => {
         while (stateIndex < states.length && !signal?.aborted) {
           const uf = states[stateIndex++];
           if (stateCities.has(uf)) continue;
-          try { stateCities.set(uf, await this.getCities(uf, { signal })); }
+          try { stateCities.set(uf, (await this.getCities(uf, { signal })).map(city => ({ ...city, state: city.state || uf }))); }
           catch (error) { onProgress({ phase: 'states', uf, error: error.message, completed: stateCities.size, total: states.length }); }
           onProgress({ phase: 'states', uf, completed: stateCities.size, total: states.length });
         }
@@ -164,11 +250,13 @@ class TuRadioCatalogClient {
     const stations = new Map();
     let cityIndex = 0;
     let completedCities = 0;
+    let successfulCities = 0;
     const cityWorker = async () => {
       while (cityIndex < uniqueCities.length && !signal?.aborted) {
         const city = uniqueCities[cityIndex++];
         try {
-          const result = await this.getCityStations(city, { signal, cache: false });
+          const result = await this.getCityStations(city, { signal, cache: false, forceRefresh });
+          successfulCities += 1;
           for (const station of result.stations || []) {
             const prior = stations.get(station.id);
             const score = item => Number(Boolean(item.streamUrl)) * 4 + Number(Boolean(item.classAndCallsign)) * 2 + Object.keys(item.technical || {}).filter(key => item.technical[key] && item.technical[key] !== '$undefined').length;
@@ -184,7 +272,9 @@ class TuRadioCatalogClient {
     };
     await Promise.all(Array.from({ length: Math.min(concurrency, uniqueCities.length) }, cityWorker));
     if (signal?.aborted) throw new DOMException('Importação cancelada.', 'AbortError');
-    return { stations: Array.from(stations.values()), cities: uniqueCities, statesLoaded: stateCities.size };
+    const result = { stations: Array.from(stations.values()), cities: uniqueCities, statesLoaded: stateCities.size };
+    if (uniqueCities.length && successfulCities === uniqueCities.length) result.persistent = await this._saveNationalMeta(result);
+    return result;
   }
 
   toUnverifiedStation(dialsStation) {

@@ -337,13 +337,13 @@ class GlobeManager {
     ctx.arc(cx, cy, 26, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = 'rgba(11, 17, 26, 0.9)';
+    ctx.fillStyle = 'rgba(7, 38, 52, 0.96)';
     ctx.beginPath();
     ctx.arc(cx, cy, 19, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.strokeStyle = '#5BD8E8';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#7FF4FF';
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.arc(cx, cy, 19, 0, Math.PI * 2);
     ctx.stroke();
@@ -357,7 +357,7 @@ class GlobeManager {
     ctx.arc(cx, cy, 23, Math.PI - 0.4, Math.PI + 0.4);
     ctx.stroke();
 
-    ctx.fillStyle = '#E6F7FF';
+    ctx.fillStyle = '#FFFFFF';
     ctx.font = 'bold 12px "Chakra Petch", "JetBrains Mono", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -403,6 +403,18 @@ class GlobeManager {
    */
   setStations(stations = []) {
     if (!Array.isArray(stations)) return;
+
+    // Hundreds of city hubs plus nearby radios can exceed mobile GPU limits.
+    // Keep every hub and a recent/priority sample of radio pins on the globe.
+    const renderLimit = 5000;
+    const cityHubs = stations.filter(station => station?.isDialsCityHub);
+    const radioStations = stations.filter(station => station && !station.isDialsCityHub);
+    if (stations.length > renderLimit) {
+      stations = [
+        ...radioStations.slice(-Math.max(0, renderLimit - cityHubs.length)),
+        ...cityHubs.slice(-renderLimit)
+      ];
+    }
 
     this.markersDataSource.entities.removeAll();
     this.renderedStationsMap.clear();

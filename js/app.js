@@ -184,6 +184,10 @@ document.addEventListener('DOMContentLoaded', () => {
   let tuRadioCityStations = [];
   let tuRadioResults = new Map();
   let tuRadioNationalStations = [];
+  let tuRadioSearchStations = [];
+  let tuRadioNationalCities = [];
+  let tuRadioNationalCachePresent = false;
+  let tuRadioNationalCacheCheckStarted = false;
   let tuRadioNationalController = null;
   let tuRadioProgress = '';
   let tuRadioBusy = new Set();
@@ -258,6 +262,63 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function normalizePlace(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
+  async function renderDialsCityPins(cities, signal = null, onProgress = () => {}, geocodeMissing = true) {
+    const counts = new Map();
+    for (const station of tuRadioNationalStations) counts.set(station.cityPageUrl, (counts.get(station.cityPageUrl) || 0) + 1);
+    const stateName = code => brazilianStates.find(([uf]) => uf === code)?.[1] || code;
+    let completed = 0;
+    let added = 0;
+    for (const city of cities) {
+      if (signal?.aborted) break;
+      const id = city.path.split('/').pop();
+      let coordinates = await tuRadioCatalog.getCityCoordinates(id);
+      if ((!coordinates || !Number.isFinite(coordinates.lat) || !Number.isFinite(coordinates.lon)) && geocodeMissing) {
+        const cityName = city.slug.replace(/^\d+-/, '').replace(/-[a-z]{2}$/i, '').replace(/-/g, ' ');
+        const query = `${cityName}, ${stateName(city.state)}, Brasil`;
+        const existing = [...allLoadedStations.values()].filter(station => station.countryCode === 'BR' &&
+          normalizePlace(station.state) === normalizePlace(stateName(city.state)) &&
+          normalizePlace(station.city) === normalizePlace(cityName) && station.hasValidCoords);
+        if (existing.length) {
+          coordinates = { lat: existing.reduce((sum, station) => sum + station.lat, 0) / existing.length,
+            lon: existing.reduce((sum, station) => sum + station.lon, 0) / existing.length, source: 'Radio Browser' };
+        } else {
+          const requestedState = normalizePlace(stateName(city.state));
+          const place = (await radioApi.geocodeLocation(query)).find(item => {
+            const resultState = normalizePlace(item.state);
+            return item.countryCode === 'BR' && (!resultState || resultState.includes(requestedState) || requestedState.includes(resultState));
+          });
+          if (place && Number.isFinite(place.lat) && Number.isFinite(place.lon)) {
+            coordinates = { lat: place.lat, lon: place.lon, source: 'OpenStreetMap Nominatim' };
+          }
+        }
+        if (coordinates) await tuRadioCatalog.saveCityCoordinates(id, coordinates);
+      }
+      if (coordinates && Number.isFinite(coordinates.lat) && Number.isFinite(coordinates.lon)) {
+        const cityName = city.slug.replace(/^\d+-/, '').replace(/-[a-z]{2}$/i, '').replace(/-/g, ' ');
+        const stationCount = counts.get(`https://tudoradio.com${city.path}`) || 0;
+        rememberMapStation({
+          id: `dials-city-${id}`, name: `${cityName} · ${stationCount} rádios`, city: cityName,
+          state: city.state, country: 'Brasil', countryCode: 'BR', lat: coordinates.lat, lon: coordinates.lon,
+          hasValidCoords: true, hasStream: false, streamUrl: null, source: 'Tudo Rádio Dials · centro da cidade',
+          isDialsCityHub: true, dialsCityPath: city.path, dialsStationCount: stationCount,
+          dialsCoordinateSource: coordinates.source || 'OpenStreetMap Nominatim'
+        });
+        added += 1;
+      }
+      completed += 1;
+      if (completed % 100 === 0 || completed === cities.length) {
+        onProgress({ completed, total: cities.length, added });
+        refreshGlobeStations();
+      }
+    }
+    refreshGlobeStations();
+    return added;
+  }
+
   let radioBrowserCatalogTotal = null;
   let globalCatalogLoaded = 0;
   let globalCatalogPhase = 'idle';
@@ -304,7 +365,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   let globalCatalogLoadingPromise = null;
-  const priorityCatalogStations = () => [...priorityStationIds].map(id => allLoadedStations.get(id)).filter(Boolean);
+  const priorityCatalogStations = () => [
+    ...[...priorityStationIds].map(id => allLoadedStations.get(id)).filter(Boolean),
+    ...tuRadioSearchStations
+  ];
   function startGlobalCatalogLoad() {
     if (globalCatalogLoadingPromise) return globalCatalogLoadingPromise;
     globalCatalogLoadingPromise = radioApi.loadGlobalCatalog({ onProgress: progress => {
@@ -431,6 +495,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (mode === 'dials') {
+      if (!tuRadioNationalCacheCheckStarted) {
+        tuRadioNationalCacheCheckStarted = true;
+        tuRadioCatalog.hasNationalCache().then(available => {
+          tuRadioNationalCachePresent = available;
+          if (utilityMode === 'dials') renderUtilityPanel('dials');
+        });
+      }
       utilityPanelTitle.textContent = 'Catálogo Dials Brasil';
       btnOpenLibrary?.classList.remove('active');
       const stateOptions = brazilianStates.map(([code, name]) => `<option value="${code}" ${tuRadioSelectedUf === code ? 'selected' : ''}>${escape(name)} (${code})</option>`).join('');
@@ -458,8 +529,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const stateLabel = brazilianStates.find(([code]) => code === tuRadioSelectedUf)?.[1] || tuRadioSelectedUf;
       utilityPanelContent.innerHTML = `
         <p class="utility-intro">Use o catálogo Dials como validação de emissora, frequência e local. Depois o app verifica o stream direto; se falhar, procura uma transmissão correspondente no Radio Browser.</p>
-        <div class="filter-actions"><button class="utility-primary-btn" id="loadDialsNational" type="button" ${tuRadioNationalController ? 'disabled' : ''}>${tuRadioNationalStations.length ? 'Atualizar catálogo Dials do Brasil' : 'Carregar Dials do Brasil inteiro'}</button>${tuRadioNationalController ? '<button class="utility-text-btn" id="cancelDialsNational" type="button">Cancelar importação</button>' : ''}</div>
-        ${tuRadioNationalStations.length ? `<p class="utility-note">${tuRadioNationalStations.length.toLocaleString('pt-BR')} emissoras únicas importadas de ${tuRadioNationalStations.reduce((set, station) => set.add(station.state), new Set()).size} UFs. Os streams ainda não foram testados. Use “Todas as estações” para pesquisar os registros; cada rádio será validada antes da busca de áudio.</p>` : ''}
+        <div class="filter-actions"><button class="utility-primary-btn" id="loadDialsNational" type="button" ${tuRadioNationalController ? 'disabled' : ''}>${tuRadioNationalCachePresent ? 'Abrir catálogo nacional salvo' : tuRadioNationalStations.length ? 'Ver catálogo carregado' : 'Importar catálogo de todas as cidades'}</button>${tuRadioNationalController ? '<button class="utility-text-btn" id="cancelDialsNational" type="button">Cancelar importação</button>' : ''}</div>
+        ${tuRadioNationalStations.length ? `<p class="utility-note">${tuRadioNationalStations.length.toLocaleString('pt-BR')} emissoras carregadas em ${tuRadioNationalCities.length.toLocaleString('pt-BR')} cidades. ${tuRadioNationalCachePresent ? 'O catálogo fica salvo neste navegador e abre sem baixar tudo de novo.' : 'O armazenamento persistente não confirmou o salvamento; os dados ficam disponíveis nesta sessão.'} Os pins representam o centro aproximado de cada cidade; toque em um pin para ver as rádios Dials locais.</p>` : ''}
         <p class="filter-count" id="dialsBatchProgress" aria-live="polite">${escape(tuRadioProgress)}</p>
         <div class="station-filter-form">
           <label>Estado<select id="dialsStateSelect">${stateOptions}</select></label>
@@ -519,15 +590,27 @@ document.addEventListener('DOMContentLoaded', () => {
           const result = await tuRadioCatalog.loadNationalCatalog({
             signal: controller.signal, concurrency: 3,
             onProgress: status => {
-              if (status.phase === 'states') tuRadioProgress = `Índices estaduais Dials: ${status.completed} de ${status.total} UFs.`;
+              if (status.phase === 'cached') tuRadioProgress = `Restaurando o catálogo salvo (${status.stationCount.toLocaleString('pt-BR')} emissoras)…`;
+              else if (status.phase === 'states') tuRadioProgress = `Índices estaduais Dials: ${status.completed} de ${status.total} UFs.`;
               else tuRadioProgress = `Catálogo nacional: ${status.completed} de ${status.total} cidades lidas · ${status.stationCount.toLocaleString('pt-BR')} emissoras únicas encontradas.`;
               const progressNode = document.getElementById('dialsBatchProgress');
               if (progressNode) progressNode.textContent = tuRadioProgress;
             }
           });
           tuRadioNationalStations = result.stations;
-          searchManager.mergeCatalog(result.stations.map(station => tuRadioCatalog.toUnverifiedStation(station)));
-          tuRadioProgress = `Catálogo carregado: ${result.stations.length.toLocaleString('pt-BR')} emissoras únicas em ${result.cities.length.toLocaleString('pt-BR')} cidades, de ${result.statesLoaded} UFs.`;
+          tuRadioSearchStations = result.stations.map(station => tuRadioCatalog.toUnverifiedStation(station));
+          tuRadioNationalCities = result.cities;
+          tuRadioNationalCachePresent = Boolean(result.persistent || result.cached);
+          searchManager.mergeCatalog(tuRadioSearchStations);
+          tuRadioProgress = `Catálogo com ${result.stations.length.toLocaleString('pt-BR')} emissoras salvo. Buscando posições aproximadas das cidades para criar pins…`;
+          const cityPins = await renderDialsCityPins(result.cities, controller.signal, status => {
+            tuRadioProgress = `Posições das cidades para o mapa: ${status.completed} de ${status.total} · ${status.added} pins prontos.`;
+            const progressNode = document.getElementById('dialsBatchProgress');
+            if (progressNode) progressNode.textContent = tuRadioProgress;
+          });
+          tuRadioProgress = controller.signal.aborted
+            ? `Importação salva. Geolocalização pausada após preparar ${cityPins} pins; abra o catálogo salvo para continuar.`
+            : `Catálogo salvo: ${result.stations.length.toLocaleString('pt-BR')} emissoras em ${result.cities.length.toLocaleString('pt-BR')} cidades de ${result.statesLoaded} UFs · ${cityPins} pins de cidade no globo.`;
         } catch (error) {
           tuRadioProgress = error.name === 'AbortError' ? 'Importação nacional cancelada; os dados já carregados nesta sessão continuam disponíveis.' : `Falha ao importar o Dials nacional: ${error.message}`;
         } finally {
@@ -1408,6 +1491,18 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   globe.onStationSelect = (station) => {
+    if (station.isDialsCityHub) {
+      const city = tuRadioNationalCities.find(item => item.path === station.dialsCityPath);
+      if (city) {
+        tuRadioSelectedUf = city.state;
+        tuRadioCities = tuRadioNationalCities.filter(item => item.state === city.state);
+        tuRadioSelectedCityPath = city.path;
+        tuRadioCityStations = tuRadioNationalStations.filter(item => item.cityPageUrl === `https://tudoradio.com${city.path}`);
+        tuRadioProgress = `${tuRadioCityStations.length.toLocaleString('pt-BR')} registros Dials em ${city.slug.replace(/^\d+-/, '').replace(/-/g, ' ')}. Pin aproximado no centro da cidade.`;
+        renderUtilityPanel('dials');
+      }
+      return;
+    }
     displayStation(station, false);
     Utils.showToast(station.hasStream ? 'Estação selecionada. Pressione play para ouvir.' : 'Esta estação não tem transmissão cadastrada.', station.hasStream ? 'info' : 'error', 2500);
   };
@@ -1459,6 +1554,18 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   loadInitialStations();
+
+  // Reuse the complete Brazilian Dials import and its city pins after reload.
+  // This only reads IndexedDB; it does not contact Tudo Rádio or geocode again.
+  tuRadioCatalog.getSavedNationalCatalog().then(async saved => {
+    if (!saved) return;
+    tuRadioNationalStations = saved.stations;
+    tuRadioSearchStations = saved.stations.map(station => tuRadioCatalog.toUnverifiedStation(station));
+    tuRadioNationalCities = saved.cities;
+    tuRadioNationalCachePresent = true;
+    searchManager.mergeCatalog(tuRadioSearchStations);
+    await renderDialsCityPins(saved.cities, null, () => {}, false);
+  }).catch(error => console.warn('[App] Não foi possível restaurar o Dials salvo:', error));
 
   // 10. Varredura por Viewport
   const handleViewportStations = Utils.debounce(async ({ west, south, east, north, altitude }) => {

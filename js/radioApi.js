@@ -866,6 +866,8 @@ class RadioApiClient {
         const places = results.map(item => ({
         displayName: item.display_name,
         name: item.name,
+        state: item.address?.state || item.address?.region || '',
+        locality: item.address?.city || item.address?.town || item.address?.village || item.address?.municipality || '',
         lat: parseFloat(item.lat),
         lon: parseFloat(item.lon),
         type: item.type,
