@@ -1,0 +1,25 @@
+{
+  "name": "WORLD RADIO GLOBE",
+  "short_name": "WorldRadio",
+  "description": "Explore a Terra em um globo 3D interativo e sintonize milhares de rádios ao vivo pelo mundo.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#05070D",
+  "theme_color": "#05070D",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Ccircle cx='96' cy='96' r='88' fill='%23090f17' stroke='%235bd8e8' stroke-width='6'/%3E%3Ccircle cx='96' cy='96' r='48' fill='none' stroke='%235bd8e8' stroke-width='4' stroke-dasharray='6 6'/%3E%3Cpath d='M24 96h144M96 24c44 40 44 104 0 144M96 24c-44 40-44 104 0 144' fill='none' stroke='%235bd8e8' stroke-width='5'/%3E%3Ccircle cx='96' cy='96' r='14' fill='%235bd8e8'/%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Ccircle cx='256' cy='256' r='236' fill='%23090f17' stroke='%235bd8e8' stroke-width='14'/%3E%3Ccircle cx='256' cy='256' r='128' fill='none' stroke='%235bd8e8' stroke-width='10' stroke-dasharray='14 14'/%3E%3Cpath d='M64 256h384M256 64c118 106 118 278 0 384M256 64c-118 106-118 278 0 384' fill='none' stroke='%235bd8e8' stroke-width='12'/%3E%3Ccircle cx='256' cy='256' r='36' fill='%235bd8e8'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

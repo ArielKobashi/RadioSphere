@@ -1,0 +1,102 @@
+/* Carregado depois das folhas específicas para que os ajustes móveis prevaleçam. */
+@media (max-width: 1180px) {
+  .top-nav-bar { gap: 12px; padding-inline: 12px; }
+  .nav-brand { min-width: 190px; }
+  .brand-subtitle { display: none; }
+  .nav-hud-stats { gap: 10px; }
+  .hud-time-controls { gap: 2px; }
+  .time-speed-group { display: none; }
+}
+
+@media (max-width: 760px) {
+  .top-nav-bar {
+    top: 8px; left: 8px; right: 8px; height: auto; min-height: 52px;
+    padding: 8px 10px; flex-wrap: wrap; gap: 8px;
+  }
+  .nav-brand { min-width: 0; flex: 1; gap: 8px; }
+  .brand-icon { width: 32px; height: 32px; }
+  .brand-title { font-size: 12px; }
+  .nav-search-container { order: 3; flex: 1 0 100%; max-width: none; }
+  #globalSearchInput { height: 40px; font-size: 12px; }
+  .nav-hud-stats { gap: 8px; }
+  .nav-hud-stats .time-utc, .nav-hud-stats .time-local, .nav-hud-stats .hud-time-controls { display: none; }
+  .status-text { font-size: 9px; }
+  .catalog-counter { max-width: 38vw; font-size: 8px; }
+  .globe-hud-controls { top: 122px; left: 8px; gap: 6px; padding: 6px; }
+  .hud-btn { width: 40px; height: 40px; }
+  .hud-telemetry { display: none; }
+  .station-drawer {
+    top: 118px; right: 8px; width: min(340px, calc(100vw - 68px));
+    max-height: calc(100dvh - 206px); padding: 14px; gap: 12px;
+  }
+  .radio-player-bar { left: 8px; right: 8px; bottom: 8px; height: 62px; padding: 0 10px; gap: 8px; }
+  .player-left { min-width: 0; flex: 1; gap: 8px; }
+  .station-logo-thumb { width: 38px; height: 38px; flex: 0 0 38px; }
+  .station-name-display { font-size: 12px; }
+  .station-geo-display { max-width: 42vw; font-size: 10px; }
+  .player-right { min-width: 0; }
+  .volume-container { gap: 4px; }
+  #volumeSlider { width: 54px; }
+  .player-center { gap: 0; }
+  .player-controls { gap: 4px; }
+  .btn-play-pause { width: 42px; height: 42px; }
+  .player-status-badge { display: none; }
+  .cesium-widget-credits { bottom: 76px !important; left: 8px !important; max-width: 45vw; }
+}
+
+@media (max-width: 390px) {
+  .brand-title { font-size: 10px; letter-spacing: .03em; }
+  .status-indicator .status-dot { display: none; }
+  .volume-container #volumeSlider { display: none; }
+  .player-left { max-width: calc(100vw - 144px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
+
+/* Layout touch-first; reserve device safe areas on iOS/Android and avoid clipped drawers. */
+@media (max-width: 760px) {
+  html, body { min-height: 100%; min-height: 100dvh; overscroll-behavior: none; }
+  .top-nav-bar { top: max(8px, env(safe-area-inset-top)); left: 8px; right: 8px; }
+  .nav-search-container { min-width: 0; }
+  #globalSearchInput { min-height: 44px; font-size: 16px; }
+  .search-shortcut-badge { display: none; }
+  .globe-hud-controls { top: calc(122px + env(safe-area-inset-top)); }
+  .hud-btn, .globe-zoom-controls button, .time-btn, .basemap-menu button { min-width: 44px; min-height: 44px; }
+  .globe-zoom-controls { right: 8px; bottom: calc(84px + env(safe-area-inset-bottom)); }
+  .station-drawer {
+    top: calc(118px + env(safe-area-inset-top)); bottom: calc(82px + env(safe-area-inset-bottom));
+    right: 8px; width: min(380px, calc(100vw - 72px)); max-height: none;
+    overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  }
+  .utility-panel {
+    top: calc(116px + env(safe-area-inset-top)); bottom: calc(80px + env(safe-area-inset-bottom));
+    left: 8px; right: 8px; width: auto; max-width: none; max-height: none;
+    overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  }
+  .utility-panel button, .utility-panel select, .utility-panel input, .station-drawer button, .station-drawer a { min-height: 44px; }
+  .radio-player-bar { bottom: max(8px, env(safe-area-inset-bottom)); min-height: 64px; }
+  .cesium-widget-credits { bottom: calc(78px + env(safe-area-inset-bottom)) !important; }
+  .explore-card { top: calc(174px + env(safe-area-inset-top)); max-height: calc(100dvh - 270px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow: auto; }
+}
+
+@media (max-width: 430px) {
+  .top-nav-bar { gap: 6px; padding: 7px 9px; }
+  .nav-hud-stats { max-width: 34vw; }
+  .catalog-counter { max-width: 32vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .globe-hud-controls { top: calc(120px + env(safe-area-inset-top)); }
+  .station-drawer { top: calc(116px + env(safe-area-inset-top)); right: 8px; width: calc(100vw - 68px); }
+  .radio-player-bar { gap: 6px; padding-inline: 8px; }
+  .player-left { max-width: calc(100vw - 142px); }
+  .station-name-display, .station-geo-display { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .top-nav-bar { top: max(5px, env(safe-area-inset-top)); min-height: 44px; padding-block: 4px; }
+  .nav-search-container { order: initial; flex: 1; max-width: 40vw; }
+  .globe-hud-controls { top: calc(62px + env(safe-area-inset-top)); }
+  .utility-panel, .station-drawer { top: calc(62px + env(safe-area-inset-top)); bottom: calc(68px + env(safe-area-inset-bottom)); }
+  .radio-player-bar { height: 56px; min-height: 56px; }
+  .cesium-widget-credits { bottom: calc(66px + env(safe-area-inset-bottom)) !important; }
+}

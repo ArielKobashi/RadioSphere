@@ -1,0 +1,174 @@
+/* ==========================================================================
+   WORLD RADIO GLOBE — Estilos Específicos do Globo CesiumJS (globe.css)
+   ========================================================================== */
+
+#cesiumContainer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--bg-base);
+  z-index: 1;
+}
+
+#cesiumContainer canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  outline: none;
+}
+
+/* Customização e Ocultação dos Controles Padrão do Cesium (Para UI Imersiva) */
+.cesium-viewer-bottom,
+.cesium-viewer-toolbar,
+.cesium-viewer-animationContainer,
+.cesium-viewer-timelineContainer,
+.cesium-viewer-fullscreenContainer {
+  display: none !important;
+}
+
+/* Créditos CesiumJS - Manter sutil, sem poluir a visão */
+.cesium-widget-credits {
+  font-size: 10px !important;
+  color: rgba(142, 173, 193, 0.4) !important;
+  background: transparent !important;
+  bottom: 74px !important; /* acima do player */
+  left: 14px !important;
+  z-index: 9 !important;
+}
+
+.cesium-widget-credits a {
+  color: rgba(142, 173, 193, 0.5) !important;
+  text-decoration: none !important;
+}
+
+.cesium-widget-credits a:hover {
+  color: var(--accent-cyan) !important;
+}
+
+/* Ocultar logo ion grande se houver, mantendo apenas texto legal */
+.cesium-credit-logoContainer {
+  display: none !important;
+}
+
+/* Efeito de Cursor Interativo */
+.cesium-grab-cursor {
+  cursor: grab;
+}
+.cesium-grab-cursor:active {
+  cursor: grabbing;
+}
+
+/* Tooltip Customizado Flutuante no Globo (Hover Holográfico) */
+.globe-tooltip {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  background: rgba(11, 17, 26, 0.92);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  border: 1px solid var(--accent-cyan);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8), 0 0 15px var(--accent-cyan-glow);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  transform: translate(18px, -50%);
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.globe-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(18px, -50%);
+}
+
+.tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tooltip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  box-shadow: 0 0 8px var(--accent-cyan);
+  animation: pulseBeacon 1.2s infinite ease-in-out;
+}
+
+@keyframes pulseBeacon {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.6; }
+}
+
+.tooltip-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-main);
+  letter-spacing: 0.04em;
+}
+
+.tooltip-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.tooltip-loc {
+  color: var(--text-muted);
+}
+
+.tooltip-tag {
+  background: rgba(91, 216, 232, 0.12);
+  border: 1px solid rgba(91, 216, 232, 0.32);
+  color: var(--accent-cyan);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+/* Indicador de Carregamento de Marcadores */
+.marker-loading-indicator {
+  position: absolute;
+  top: 84px;
+  left: 70px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--accent-cyan);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+
+.marker-loading-indicator.visible {
+  opacity: 1;
+}
+
+.spinner-radar {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(91, 216, 232, 0.2);
+  border-top-color: var(--accent-cyan);
+  border-radius: 50%;
+  animation: spinRadar 0.8s linear infinite;
+}
+
+@keyframes spinRadar {
+  to { transform: rotate(360deg); }
+}

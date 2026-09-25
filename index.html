@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WORLD RADIO GLOBE — Centro de Comunicações Global</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='38' fill='%23090f17' stroke='%235bd8e8' stroke-width='4'/%3E%3Cpath d='M12 50h76M50 12c22 20 22 56 0 76M50 12c-22 20-22 56 0 76' fill='none' stroke='%235bd8e8' stroke-width='4'/%3E%3C/svg%3E">
+  
+  <!-- Fontes Futuristas / Modernas -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+  <!-- PWA & Mobile Web App -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#05070D">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="WorldRadio">
+
+  <!-- CesiumJS CSS -->
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Widgets/widgets.css">
+
+  <!-- Estilos da Aplicação -->
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/globe.css">
+  <link rel="stylesheet" href="css/player.css">
+  <link rel="stylesheet" href="css/visual.css">
+  <link rel="stylesheet" href="css/responsive.css">
+</head>
+<body class="theme-dark">
+  <!-- Container Principal do CesiumJS (Full Screen) -->
+  <div id="cesiumContainer"></div>
+
+  <!-- Camada de Vinheta / Grid Cibernético Estilizado -->
+  <div class="hud-vignette-overlay" aria-hidden="true"></div>
+
+  <!-- Header Superior / Barra de Pesquisa e HUD -->
+  <header class="top-nav-bar glass-panel">
+    <div class="nav-brand">
+      <div class="brand-icon pulse">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="8.5"></circle>
+          <path d="M4 12h16M12 3.5a13 13 0 0 1 0 17M12 3.5a13 13 0 0 0 0 17M17.5 5.5a4 4 0 0 1 0 5.7M6.5 12.8a4 4 0 0 0 0 5.7"></path>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1 class="brand-title">WORLD RADIO <span class="highlight">GLOBE</span></h1>
+        <span class="brand-subtitle">SINTONIZE O PLANETA</span>
+      </div>
+    </div>
+
+    <!-- Busca acionada pelo usuário: o Nominatim público não permite autocomplete. -->
+    <div class="nav-search-container">
+      <form class="search-input-wrapper" id="globalSearchForm" role="search">
+        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"></circle>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+        <input 
+          type="text" 
+          id="globalSearchInput" 
+          placeholder="Cidade, país, estação, idioma ou gênero…" 
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="Buscar rádios ou lugares"
+          aria-controls="searchResults"
+          aria-expanded="false"
+        >
+        <button class="search-shortcut-badge" type="submit" aria-label="Pesquisar">ENTER</button>
+        <div id="searchResults" class="search-results glass-panel" role="listbox" aria-label="Resultados da pesquisa" hidden></div>
+      </form>
+    </div>
+
+    <!-- HUD de Tempo, Controle 4D e Status -->
+    <div class="nav-hud-stats">
+      <div class="hud-item time-utc">
+        <span class="hud-label">TEMPO UTC</span>
+        <span class="hud-value font-mono" id="hudUtcTime">--:--:--</span>
+      </div>
+      <div class="hud-item time-local">
+        <span class="hud-label">LOCAL</span>
+        <span class="hud-value font-mono" id="hudLocalTime">--:--:--</span>
+      </div>
+
+      <!-- Controles 4D de Tempo Solar -->
+      <div class="hud-time-controls font-mono" title="Controle Temporal 4D (Ciclo Solar)">
+        <button class="time-btn" id="btnTimeReverse" title="Retroceder 3 Horas">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="11 19 2 12 11 5 11 19"></polygon><polygon points="22 19 13 12 22 5 22 19"></polygon></svg>
+        </button>
+        <button class="time-btn active" id="btnTimePlayPause" title="Pausar / Retomar Passagem do Tempo">
+          <svg id="iconTimeState" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+        </button>
+        <button class="time-btn" id="btnTimeForward" title="Avançar 3 Horas">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg>
+        </button>
+        <div class="time-speed-group">
+          <button class="speed-pill active" data-speed="1">1x</button>
+          <button class="speed-pill" data-speed="10">10x</button>
+          <button class="speed-pill" data-speed="100">100x</button>
+          <button class="speed-pill" data-speed="1000">1000x</button>
+        </div>
+        <button class="time-btn" id="btnTimeSyncReal" title="Sincronizar com Horário Real da Máquina">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+        </button>
+      </div>
+
+      <div class="hud-item status-indicator">
+        <span class="status-dot online"></span>
+        <span class="status-text font-mono" id="sysStatusText">ONLINE</span>
+      </div>
+      <div class="hud-item catalog-counter font-mono" id="stationCatalogCount" aria-live="polite">Estações: aguardando catálogo</div>
+    </div>
+  </header>
+
+  <!-- Convite inicial à exploração; some ao iniciar uma ação ou ser dispensado. -->
+  <section id="exploreCard" class="explore-card glass-panel" aria-labelledby="exploreTitle" hidden>
+    <button class="explore-dismiss" id="dismissExplore" type="button" aria-label="Fechar convite de exploração" title="Fechar">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m18 6-12 12M6 6l12 12"></path></svg>
+    </button>
+    <div class="explore-kicker"><span class="status-dot online"></span> AO VIVO PELO MUNDO</div>
+    <h2 id="exploreTitle">O mundo está no ar.</h2>
+    <p>Gire o globo, encontre uma cidade e sintonize o que está tocando por lá.</p>
+    <div class="explore-actions">
+      <button id="exploreSearch" class="explore-search-action" type="button">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>
+        Buscar uma cidade ou rádio
+      </button>
+      <button id="exploreRandom" class="explore-secondary-action" type="button">✦ Descobrir uma rádio</button>
+      <button id="exploreTour" class="explore-secondary-action" type="button">World Tour <span aria-hidden="true">→</span></button>
+    </div>
+    <span class="explore-hint">Arraste para girar · role para aproximar</span>
+  </section>
+
+  <!-- Controles Rápidos do Globo (HUD Lateral Esquerdo) -->
+  <aside class="globe-hud-controls glass-panel">
+    <button class="hud-btn" id="btnResetView" title="Centralizar Globo (Visão Global)">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"></circle>
+        <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path>
+        <path d="M2 12h20"></path>
+      </svg>
+      <span class="hud-btn-tooltip">Visão Global</span>
+    </button>
+    <div class="map-layer-control">
+    <button class="hud-btn" id="btnSwitchBasemap" title="Escolher camada do mapa" aria-expanded="false" aria-controls="basemapMenu">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon>
+        <line x1="8" y1="2" x2="8" y2="18"></line>
+        <line x1="16" y1="6" x2="16" y2="22"></line>
+      </svg>
+      <span class="hud-btn-tooltip" id="tooltipBasemap">Mapa: Escuro · Esri</span>
+    </button>
+    <div id="basemapMenu" class="basemap-menu glass-panel" role="group" aria-label="Camadas do mapa" hidden>
+      <span class="basemap-menu-title">CAMADA DO MAPA</span>
+      <button type="button" data-basemap="dark" aria-pressed="true">Escuro · Esri</button>
+      <button type="button" data-basemap="streets" aria-pressed="false">Ruas · Esri</button>
+      <button type="button" data-basemap="satellite" aria-pressed="false">Satélite · Esri</button>
+      <button type="button" data-basemap="osm" aria-pressed="false">OpenStreetMap</button>
+    </div>
+    </div>
+    <button class="hud-btn active" id="btnToggleClustering" type="button" title="Desativar agrupamento e mostrar todas as estações" aria-label="Agrupamento de estações ligado" aria-pressed="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.2"></circle><circle cx="5" cy="5" r="2"></circle><circle cx="19" cy="5" r="2"></circle><circle cx="5" cy="19" r="2"></circle><circle cx="19" cy="19" r="2"></circle>
+        <path d="m9.8 9.8-3.4-3.4m8.8 3.4 3.4-3.4m-8.8 8.8-3.4 3.4m8.8-3.4 3.4 3.4"></path>
+      </svg>
+      <span class="hud-btn-tooltip" id="tooltipClustering">Agrupamento ligado · mostrar estações separadas</span>
+    </button>
+    <button class="hud-btn" id="btnToggleLighting" title="Alternar Iluminação Solar Dinâmica (Dia/Noite)">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="5"></circle>
+        <line x1="12" y1="1" x2="12" y2="3"></line>
+        <line x1="12" y1="21" x2="12" y2="23"></line>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+        <line x1="1" y1="12" x2="3" y2="12"></line>
+        <line x1="21" y1="12" x2="23" y2="12"></line>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+      </svg>
+      <span class="hud-btn-tooltip">Iluminação Solar</span>
+    </button>
+    <button class="hud-btn" id="btnRandomStation" title="Sintonizar Estação Aleatória">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="16 3 21 3 21 8"></polyline>
+        <line x1="4" y1="20" x2="21" y2="3"></line>
+        <polyline points="21 16 21 21 16 21"></polyline>
+        <line x1="15" y1="15" x2="21" y2="21"></line>
+        <line x1="4" y1="4" x2="9" y2="9"></line>
+      </svg>
+      <span class="hud-btn-tooltip">Rádio Aleatória</span>
+    </button>
+    <button class="hud-btn" id="btnWorldTour" title="Iniciar World Tour Automático">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+      </svg>
+      <span class="hud-btn-tooltip">World Tour</span>
+    </button>
+    <button class="hud-btn" id="btnOpenLibrary" title="Abrir favoritos e histórico" aria-label="Abrir favoritos e histórico">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z"></path></svg>
+      <span class="hud-btn-tooltip">Favoritos e histórico</span>
+    </button>
+    <button class="hud-btn" id="btnOpenFilters" title="Filtrar estações carregadas" aria-label="Filtrar estações carregadas">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M7 12h10m-7 5h4"></path><circle cx="8" cy="7" r="2" fill="currentColor" stroke="none"></circle><circle cx="15" cy="12" r="2" fill="currentColor" stroke="none"></circle></svg>
+      <span class="hud-btn-tooltip">Filtrar estações</span>
+    </button>
+    <button class="hud-btn" id="btnConfigToken" title="Configurar Token Cesium Ion">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+      </svg>
+      <span class="hud-btn-tooltip">Token Cesium</span>
+    </button>
+  </aside>
+
+  <div class="globe-zoom-controls glass-panel" role="group" aria-label="Zoom do globo">
+    <button id="btnZoomIn" type="button" aria-label="Aumentar zoom" title="Aumentar zoom">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+    </button>
+    <button id="btnZoomOut" type="button" aria-label="Diminuir zoom" title="Diminuir zoom">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"></path></svg>
+    </button>
+  </div>
+
+  <!-- Coordenadas HUD e Telemetria em Tempo Real (Canto Inferior Direito) -->
+  <div class="hud-telemetry glass-panel font-mono">
+    <div class="telemetry-row">
+      <span class="telemetry-label">COORD:</span>
+      <span class="telemetry-value" id="hudCoords">LAT: --.----° | LON: --.----°</span>
+    </div>
+    <div class="telemetry-row">
+      <span class="telemetry-label">ALTITUDE:</span>
+      <span class="telemetry-value" id="hudAltitude">-- km</span>
+    </div>
+  </div>
+
+  <!-- Indicador de Varredura de Sinais (Radar Loading) -->
+  <div id="markerLoadingIndicator" class="marker-loading-indicator glass-panel font-mono">
+    <div class="spinner-radar"></div>
+    <span>VARRENDO FREQUÊNCIAS...</span>
+  </div>
+
+  <!-- Tooltip Holográfico Flutuante do Globo -->
+  <div id="globeTooltip" class="globe-tooltip" aria-hidden="true">
+    <div class="tooltip-header">
+      <div class="tooltip-dot"></div>
+      <span class="tooltip-title font-display" id="tooltipTitle">Nome da Estação</span>
+    </div>
+    <div class="tooltip-meta">
+      <span class="tooltip-loc" id="tooltipLoc">Cidade, País</span>
+      <span class="tooltip-tag font-mono" id="tooltipTag">#Gênero</span>
+    </div>
+  </div>
+
+  <!-- Painel Lateral de Estação (Station Drawer) -->
+  <aside id="stationPanel" class="station-drawer glass-panel hidden">
+    <!-- Será populado dinamicamente -->
+  </aside>
+
+  <aside id="utilityPanel" class="utility-panel glass-panel" aria-label="Minha rádio" hidden>
+    <div class="utility-panel-header">
+      <div><span class="utility-kicker">SUA ESTAÇÃO</span><h2 id="utilityPanelTitle">Minha rádio</h2></div>
+      <button class="btn-close-drawer" id="btnCloseUtility" type="button" aria-label="Fechar painel" title="Fechar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m18 6-12 12M6 6l12 12"></path></svg>
+      </button>
+    </div>
+    <div id="utilityPanelContent"></div>
+  </aside>
+
+  <!-- Player de rádio persistente -->
+  <footer id="radioPlayerBar" class="radio-player-bar glass-panel">
+    <div class="player-left">
+      <div class="station-logo-thumb" id="playerLogoThumb">
+        <div class="radio-wave-bars idle" id="radioWaveBars">
+          <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+      </div>
+      <div class="station-meta-info">
+        <span class="station-name-display font-display" id="playerStationName">Escolha uma frequência</span>
+        <span class="station-now-playing font-mono" id="playerNowPlaying" aria-live="polite"></span>
+        <span class="station-geo-display" id="playerGeoDisplay">Rádios locais de todo o mundo, ao vivo</span>
+      </div>
+    </div>
+
+    <div class="player-center">
+      <!-- Canvas do Visualizador de Áudio -->
+      <div class="visualizer-container">
+        <canvas id="audioVisualizerCanvas" class="audio-visualizer-canvas" aria-hidden="true"></canvas>
+        <button id="btnCycleVisualizer" class="btn-visualizer-cycle" type="button" title="Alternar modo do visualizador" aria-label="Alterar modo do visualizador">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </button>
+      </div>
+      <div class="player-controls">
+        <button class="btn-play-pause" id="btnPlayPause" disabled title="Aguardando seleção">
+          <svg class="icon-play" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>
+        </button>
+      </div>
+      <div class="player-status-badge font-mono" id="playerStatusText" role="status" aria-live="polite">PRONTO</div>
+    </div>
+
+    <div class="player-right">
+      <button id="btnPlayerFavorite" class="player-favorite-btn" type="button" disabled title="Favoritar estação atual" aria-label="Favoritar estação atual">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z"></path></svg>
+      </button>
+      <div class="volume-container">
+        <button id="btnMuteToggle" class="btn-mute" title="Mutar / Desmutar Áudio">
+          <svg id="volumeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          </svg>
+        </button>
+        <input type="range" id="volumeSlider" min="0" max="1" step="0.05" value="0.8" aria-label="Volume">
+      </div>
+    </div>
+  </footer>
+
+
+  <!-- Modal para Configuração do Cesium Ion Token -->
+  <dialog id="tokenModal" class="glass-dialog">
+    <div class="dialog-content glass-panel">
+      <h2 class="dialog-title font-display">CONFIGURAÇÃO DE ACESSO CESIUM ION</h2>
+      <p class="dialog-desc">
+        O <strong>CesiumJS</strong> utiliza um token de acesso para carregar camadas globais em alta resolução (Cesium World Imagery / Bing Maps). 
+        Você pode utilizar o token padrão embutido, inserir o seu token gratuito criado em 
+        <a href="https://ion.cesium.com/signup" target="_blank" rel="noopener">cesium.com</a>, 
+        ou rodar com a camada escura do Esri, sem token.
+      </p>
+      
+      <div class="dialog-input-group">
+        <label for="cesiumTokenInput">Cesium Ion Access Token:</label>
+        <input type="text" id="cesiumTokenInput" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." spellcheck="false">
+      </div>
+
+      <div class="dialog-actions">
+        <button id="btnSaveToken" class="btn-primary">Salvar Token & Recarregar</button>
+        <button id="btnUseDarkFallback" class="btn-secondary">Usar camada escura Esri</button>
+        <button id="btnCloseModal" class="btn-ghost">Fechar</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Notificações Toast do Sistema -->
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+  <!-- Scripts: Dependência CesiumJS (Define CESIUM_BASE_URL antes de importar) -->
+  <script>
+    window.CESIUM_BASE_URL = 'https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/';
+  </script>
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Cesium.js"></script>
+
+  <!-- Módulos da Aplicação -->
+  <script src="js/utils.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/globe.js"></script>
+  <script src="js/radioApi.js"></script>
+  <script src="js/tudoradio.js"></script>
+  <script src="js/search.js"></script>
+  <script src="js/player.js"></script>
+  <script src="js/audioVisualizer.js"></script>
+  <script src="js/shazamRecognition.js"></script>
+  <script src="js/metadataManager.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

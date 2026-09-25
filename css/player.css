@@ -1,0 +1,430 @@
+/* ==========================================================================
+   WORLD RADIO GLOBE — Player de Áudio & Painel da Estação (player.css)
+   ========================================================================== */
+
+/* Barra Inferior Fixa do Player */
+.radio-player-bar {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  right: 14px;
+  height: 64px;
+  border-radius: var(--radius-md);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  gap: 20px;
+}
+
+/* Lado Esquerdo: Identificação da Estação e Onda Sonora */
+.player-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 260px;
+  max-width: 360px;
+}
+
+.station-logo-thumb {
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.station-logo-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Visualizador de Barras de Onda de Áudio */
+.radio-wave-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 18px;
+}
+
+.radio-wave-bars span {
+  width: 3px;
+  background: var(--accent-cyan);
+  border-radius: 1px;
+  height: 4px;
+  transition: height 0.2s ease;
+}
+
+.radio-wave-bars.playing span:nth-child(1) { animation: soundWave 0.8s infinite ease-in-out alternate; }
+.radio-wave-bars.playing span:nth-child(2) { animation: soundWave 1.1s infinite ease-in-out alternate 0.2s; }
+.radio-wave-bars.playing span:nth-child(3) { animation: soundWave 0.9s infinite ease-in-out alternate 0.4s; }
+.radio-wave-bars.playing span:nth-child(4) { animation: soundWave 1.3s infinite ease-in-out alternate 0.1s; }
+.radio-wave-bars.playing span:nth-child(5) { animation: soundWave 0.95s infinite ease-in-out alternate 0.3s; }
+.radio-wave-bars.playing span:nth-child(6) { animation: soundWave 1.2s infinite ease-in-out alternate 0.15s; }
+.radio-wave-bars.playing span:nth-child(7) { animation: soundWave 0.75s infinite ease-in-out alternate 0.45s; }
+
+@keyframes soundWave {
+  0% { height: 3px; }
+  100% { height: 18px; }
+}
+
+.station-meta-info {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.station-name-display {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.station-geo-display {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+/* Centro: Controles Principais de Reprodução */
+.player-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.player-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn-play-pause {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  border: none;
+  color: var(--bg-base);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--shadow-glow);
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+
+.btn-play-pause:hover:not(:disabled) {
+  transform: scale(1.08);
+  background: #38e1ff;
+}
+
+.btn-play-pause:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.player-status-badge {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+/* Lado Direito: Volume & Favoritar */
+.player-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 180px;
+  justify-content: flex-end;
+}
+
+.volume-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.btn-mute {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+.btn-mute:hover {
+  color: var(--accent-cyan);
+}
+
+.btn-mute.muted {
+  color: var(--accent-rose);
+}
+
+#volumeSlider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 90px;
+  height: 4px;
+  background: var(--border-color);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+#volumeSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  box-shadow: 0 0 6px var(--accent-cyan);
+  cursor: pointer;
+}
+
+/* Estados adicionais de barras sonoras */
+.radio-wave-bars.buffering span {
+  background: var(--accent-amber);
+  animation: soundBuffering 0.6s infinite alternate ease-in-out;
+}
+
+@keyframes soundBuffering {
+  from { height: 2px; }
+  to { height: 12px; }
+}
+
+.radio-wave-bars.error span {
+  background: var(--accent-rose);
+  height: 2px;
+}
+
+/* Painel Lateral da Estação (Station Drawer) */
+.station-drawer {
+  position: absolute;
+  top: 84px;
+  right: 14px;
+  width: 360px;
+  max-height: calc(100vh - 180px);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75), 0 0 1px 1px var(--accent-cyan-dim);
+  transition: transform var(--transition-normal), opacity var(--transition-normal);
+}
+
+.station-drawer.hidden {
+  transform: translateX(0);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.station-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 14px;
+}
+
+.drawer-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.drawer-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.drawer-title-group {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.drawer-station-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-main);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.drawer-station-loc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.btn-close-drawer {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast);
+}
+
+.btn-close-drawer:hover {
+  color: var(--accent-cyan);
+}
+
+/* Badges de Protocolo e Segurança */
+.protocol-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  width: fit-content;
+}
+
+.protocol-badge.https {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-emerald);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.protocol-badge.http {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-amber);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+/* Especificações Técnicas da Rádio */
+.station-specs-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.spec-item {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+}
+
+.spec-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+
+.spec-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+/* Tags de Gêneros Musicais */
+.station-tags-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.station-tag {
+  background: rgba(29, 41, 57, 0.6);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 2px 7px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Ações do Painel */
+.drawer-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.drawer-btn-fav {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px;
+  background: rgba(18, 27, 41, 0.8);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.drawer-btn-fav:hover {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+.drawer-btn-fav.active {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+}
+
+.drawer-btn-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 12px;
+  background: rgba(18, 27, 41, 0.8);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 12px;
+  transition: all var(--transition-fast);
+}
+
+.drawer-btn-link:hover {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
