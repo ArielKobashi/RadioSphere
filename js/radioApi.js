@@ -164,9 +164,12 @@ class RadioApiClient {
       lon >= -180 && lon <= 180 &&
       !(lat === 0 && lon === 0); // Descarta nulos codificados como 0,0 no oceano atlântico equatorial
 
-    const streamUrl = this.safeHttpUrl(raw.url_resolved || raw.url);
     const isCapitalCascavel = String(raw.countrycode || '').toUpperCase() === 'BR' &&
       /capital\s*fm/i.test(raw.name) && /cascavel/i.test(`${raw.city || ''} ${raw.state || ''}`);
+    // The official Radio Browser entry can have a stale link. This direct MP3
+    // endpoint is also published in the local Tudo Rádio Dials catalog.
+    const capitalCascavelStream = 'https://glaudiotecnology.srv.br/listen/r%C3%A1dio_capital_102.7_fm_-_cascavel__pr_-_brasil/capital102.7';
+    const streamUrl = isCapitalCascavel ? capitalCascavelStream : this.safeHttpUrl(raw.url_resolved || raw.url);
     const homepage = isCapitalCascavel ? 'https://capitalfm.com.br/' : this.safeHttpUrl(raw.homepage);
     const listenPageUrl = isCapitalCascavel ? 'https://tudoradio.com/player/radio/986-capital-fm' : null;
 

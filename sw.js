@@ -3,7 +3,7 @@
  * Estratégia de cache offline para App Shell PWA e navegação resiliente.
  */
 
-const CACHE_NAME = 'wrg-shell-v4';
+const CACHE_NAME = 'wrg-shell-v5';
 const APP_SHELL_ASSETS = [
   './',
   './index.html',

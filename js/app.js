@@ -51,7 +51,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const priorityStationIds = new Set();
   let radioCountries = [];
   let radioCountriesPromise = null;
-  let activeStationFilters = { country: '', state: '', language: '', genre: '', codec: '', minBitrate: '' };
+  let activeStationFilters = { country: '', state: '', language: '', genre: '', codec: '', minBitrate: '', database: '' };
 
   // 2. Elementos de Interface do Usuário (HUD)
   const hudUtcTime = document.getElementById('hudUtcTime');
@@ -239,6 +239,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const matches = (value, filter) => !filter || String(value || '').toLowerCase().includes(filter.toLowerCase());
       if (filters.country && String(station.countryCode || station.country || '').toLowerCase() !== filters.country.toLowerCase() && String(station.country || '').toLowerCase() !== filters.country.toLowerCase()) return false;
       if (!matches(station.state, filters.state) || !matches(station.language, filters.language)) return false;
+      if (filters.database && !String(station.source || '').toLowerCase().includes(filters.database.toLowerCase())) return false;
       if (filters.genre && !(station.tags || []).some(tag => matches(tag, filters.genre))) return false;
       if (filters.codec && String(station.codec || '').toLowerCase() !== filters.codec.toLowerCase()) return false;
       if (filters.minBitrate && Number(station.bitrate || 0) < Number(filters.minBitrate)) return false;
@@ -247,13 +248,38 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function refreshGlobeStations() {
-    globe.setStations(getFilteredStations());
+    globe.setStations(getFilteredStations().filter(station => station.hasValidCoords));
+  }
+
+  async function ensureDialsCityPin(city, stationCount = 0) {
+    if (!city?.path) return false;
+    const id = city.path.split('/').pop();
+    let coordinates = await tuRadioCatalog.getCityCoordinates(id);
+    const stateName = brazilianStates.find(([uf]) => uf === city.state)?.[1] || city.state;
+    const cityName = city.slug.replace(/^\d+-/, '').replace(/-[a-z]{2}$/i, '').replace(/-/g, ' ');
+    if (!coordinates || !Number.isFinite(coordinates.lat) || !Number.isFinite(coordinates.lon)) {
+      const place = (await radioApi.geocodeLocation(`${cityName}, ${stateName}, Brasil`)).find(item => item.countryCode === 'BR');
+      if (place && Number.isFinite(place.lat) && Number.isFinite(place.lon)) {
+        coordinates = { lat: place.lat, lon: place.lon, source: 'OpenStreetMap Nominatim' };
+        await tuRadioCatalog.saveCityCoordinates(id, coordinates);
+      }
+    }
+    if (!coordinates || !Number.isFinite(coordinates.lat) || !Number.isFinite(coordinates.lon)) return false;
+    rememberMapStation({
+      id: `dials-city-${id}`, name: `${cityName} · ${stationCount} rádios`, city: cityName,
+      state: city.state, country: 'Brasil', countryCode: 'BR', lat: coordinates.lat, lon: coordinates.lon,
+      hasValidCoords: true, hasStream: false, streamUrl: null, source: 'Tudo Rádio Dials · centro da cidade',
+      isDialsCityHub: true, dialsCityPath: city.path, dialsStationCount: stationCount,
+      dialsCoordinateSource: coordinates.source || 'OpenStreetMap Nominatim'
+    });
+    refreshGlobeStations();
+    return true;
   }
 
   function rememberMapStation(station) {
     if (!station?.id) return;
     allLoadedStations.set(station.id, station);
-    radioApi.saveStation?.(station).catch?.(() => {});
+    if (station.source !== 'Radio Browser') radioApi.saveStation?.(station).catch?.(() => {});
     const maxStations = window.WRG_CONFIG?.radioBrowser.stationMemoryLimit || 5000;
     if (allLoadedStations.size > maxStations) {
       for (const id of allLoadedStations.keys()) {
@@ -372,9 +398,22 @@ document.addEventListener('DOMContentLoaded', () => {
   ];
   function startGlobalCatalogLoad() {
     if (globalCatalogLoadingPromise) return globalCatalogLoadingPromise;
+    let mapRefreshTimer = null;
+    const scheduleMapRefresh = () => {
+      if (mapRefreshTimer) return;
+      mapRefreshTimer = setTimeout(() => { mapRefreshTimer = null; refreshGlobeStations(); }, 900);
+    };
     globalCatalogLoadingPromise = radioApi.loadGlobalCatalog({ onProgress: progress => {
-      if (Array.isArray(progress.stations)) searchManager.setCatalog([...progress.stations, ...priorityCatalogStations()]);
-      if (Array.isArray(progress.pageStations)) searchManager.mergeCatalog(progress.pageStations);
+      if (Array.isArray(progress.stations)) {
+        searchManager.setCatalog([...progress.stations, ...priorityCatalogStations()]);
+        progress.stations.forEach(station => { if (station.hasValidCoords) rememberMapStation(station); });
+        scheduleMapRefresh();
+      }
+      if (Array.isArray(progress.pageStations)) {
+        searchManager.mergeCatalog(progress.pageStations);
+        progress.pageStations.forEach(station => { if (station.hasValidCoords) rememberMapStation(station); });
+        scheduleMapRefresh();
+      }
       updateCatalogCounter(progress.total, progress.received, progress.phase);
       if (progress.phase === 'ready' || progress.phase === 'partial' || progress.phase === 'unavailable') refreshCatalogDiagnostics();
       if (utilityMode === 'catalog' && ['ready', 'partial', 'unavailable', 'cancelled'].includes(progress.phase)) {
@@ -384,6 +423,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } }).then(result => {
       searchManager.setCatalog([...(result.stations || []), ...priorityCatalogStations()]);
+      (result.stations || []).forEach(station => { if (station.hasValidCoords) rememberMapStation(station); });
+      if (mapRefreshTimer) clearTimeout(mapRefreshTimer);
+      mapRefreshTimer = null;
+      refreshGlobeStations();
       updateCatalogCounter(result.total, result.received, result.phase);
       refreshCatalogDiagnostics();
     }).catch(error => {
@@ -436,6 +479,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <label>Idioma<select name="language">${filterOptions('language', station => station.language)}</select></label>
           <label>Gênero<select name="genre">${filterOptions('genre', station => station.tags || [])}</select></label>
           <label>Codec<select name="codec">${filterOptions('codec', station => station.codec)}</select></label>
+          <label>Banco de dados<select name="database"><option value="">Todos os bancos</option><option value="Radio Browser" ${activeStationFilters.database === 'Radio Browser' ? 'selected' : ''}>Radio Browser · mundial</option><option value="Tudo Rádio Dials" ${activeStationFilters.database === 'Tudo Rádio Dials' ? 'selected' : ''}>Tudo Rádio Dials · Brasil</option><option value="IPRD" ${activeStationFilters.database === 'IPRD' ? 'selected' : ''}>IPRD · rádios públicas</option></select></label>
           <label>Bitrate mínimo<input name="minBitrate" type="number" min="0" max="1000" step="16" value="${escape(activeStationFilters.minBitrate)}" placeholder="Qualquer bitrate"></label>
           <div class="filter-actions"><button class="utility-primary-btn" type="submit">Aplicar filtros</button><button class="utility-text-btn" id="clearStationFilters" type="button">Limpar</button></div>
         </form>
@@ -474,7 +518,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderUtilityPanel('filters');
       });
       document.getElementById('clearStationFilters')?.addEventListener('click', () => {
-        activeStationFilters = { country: '', state: '', language: '', genre: '', codec: '', minBitrate: '' };
+        activeStationFilters = { country: '', state: '', language: '', genre: '', codec: '', minBitrate: '', database: '' };
         refreshGlobeStations();
         renderUtilityPanel('filters');
       });
@@ -577,6 +621,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const result = await tuRadioCatalog.getCityStations(city);
           tuRadioCityStations = result.stations || [];
           tuRadioResults = new Map();
+          await ensureDialsCityPin(city, tuRadioCityStations.length);
           tuRadioProgress = `${tuRadioCityStations.length.toLocaleString('pt-BR')} registros confirmados no catálogo Dials de ${result.city?.name || city.slug}.`;
         } catch (error) { tuRadioProgress = `Não consegui carregar a cidade: ${error.message}`; }
         renderUtilityPanel('dials');
@@ -600,6 +645,7 @@ document.addEventListener('DOMContentLoaded', () => {
           });
           tuRadioNationalStations = result.stations;
           tuRadioSearchStations = result.stations.map(station => tuRadioCatalog.toUnverifiedStation(station));
+          tuRadioSearchStations.forEach(rememberMapStation);
           tuRadioNationalCities = result.cities;
           tuRadioNationalCachePresent = Boolean(result.persistent || result.cached);
           searchManager.mergeCatalog(tuRadioSearchStations);
