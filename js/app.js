@@ -253,6 +253,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function rememberMapStation(station) {
     if (!station?.id) return;
     allLoadedStations.set(station.id, station);
+    radioApi.saveStation?.(station).catch?.(() => {});
     const maxStations = window.WRG_CONFIG?.radioBrowser.stationMemoryLimit || 5000;
     if (allLoadedStations.size > maxStations) {
       for (const id of allLoadedStations.keys()) {
@@ -1110,9 +1111,12 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const failedStreamUrls = new Set();
+  const resolvingFailedStreams = new Set();
   audioPlayer.onStreamError = async failedStation => {
     if (!failedStation?.name) return;
     const failedUrl = String(failedStation.streamUrl || '').trim().toLowerCase();
+    if (failedUrl && resolvingFailedStreams.has(failedUrl)) return;
+    if (failedUrl) resolvingFailedStreams.add(failedUrl);
     if (failedUrl) failedStreamUrls.add(failedUrl);
     Utils.showToast(`Stream de ${failedStation.name} falhou. Procurando outra entrada da mesma rádio…`, 'info', 3500);
     try {
@@ -1161,6 +1165,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (_) {
       Utils.showToast(`Não consegui consultar streams alternativos para ${failedStation.name}.`, 'error', 5000);
+    } finally {
+      if (failedUrl) resolvingFailedStreams.delete(failedUrl);
     }
   };
 

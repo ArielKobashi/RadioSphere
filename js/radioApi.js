@@ -372,11 +372,12 @@ class RadioApiClient {
     if (this.catalogDbPromise) return this.catalogDbPromise;
     if (!window.indexedDB) return Promise.resolve(null);
     this.catalogDbPromise = new Promise(resolve => {
-      const request = window.indexedDB.open('world-radio-globe-catalog', 1);
+      const request = window.indexedDB.open('world-radio-globe-catalog', 2);
       request.onupgradeneeded = () => {
         const db = request.result;
         if (!db.objectStoreNames.contains('pages')) db.createObjectStore('pages', { keyPath: 'offset' });
         if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+        if (!db.objectStoreNames.contains('stations')) db.createObjectStore('stations', { keyPath: 'id' });
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => resolve(null);
@@ -390,9 +391,14 @@ class RadioApiClient {
     if (!db) { this.catalogPersistentCache = false; return { pages: [], meta: null }; }
     return new Promise(resolve => {
       try {
-        const tx = db.transaction(['pages', 'meta'], 'readonly');
+        const stores = db.objectStoreNames.contains('stations') ? ['pages', 'meta', 'stations'] : ['pages', 'meta'];
+        const tx = db.transaction(stores, stores.includes('stations') ? 'readwrite' : 'readonly');
         const pagesRequest = tx.objectStore('pages').getAll();
         const metaRequest = tx.objectStore('meta').get('catalog');
+        if (stores.includes('stations')) {
+          pagesRequest.onsuccess = () => (pagesRequest.result || []).forEach(page =>
+            (page.stations || []).forEach(station => { if (station?.id) tx.objectStore('stations').put(station); }));
+        }
         tx.oncomplete = () => {
           this.catalogPersistentCache = true;
           resolve({ pages: pagesRequest.result || [], meta: metaRequest.result || null });
@@ -407,10 +413,41 @@ class RadioApiClient {
     if (!db) { this.catalogPersistentCache = false; return false; }
     return new Promise(resolve => {
       try {
-        const tx = db.transaction('pages', 'readwrite');
+        const stores = db.objectStoreNames.contains('stations') ? ['pages', 'stations'] : ['pages'];
+        const tx = db.transaction(stores, 'readwrite');
         tx.objectStore('pages').put({ offset, stations, updatedAt: Date.now() });
+        if (stores.includes('stations')) stations.forEach(station => {
+          if (station?.id) tx.objectStore('stations').put(station);
+        });
         tx.oncomplete = () => { this.catalogPersistentCache = true; resolve(true); };
         tx.onerror = tx.onabort = () => { this.catalogPersistentCache = false; resolve(false); };
+      } catch (_) { resolve(false); }
+    });
+  }
+
+  /** Lista registros persistidos localmente, sem consultar a rede. */
+  async getStoredStations() {
+    const db = await this._openCatalogDb();
+    if (!db || !db.objectStoreNames.contains('stations')) return [];
+    return new Promise(resolve => {
+      try {
+        const request = db.transaction('stations', 'readonly').objectStore('stations').getAll();
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => resolve([]);
+      } catch (_) { resolve([]); }
+    });
+  }
+
+  /** Grava/atualiza uma estação individual no catálogo IndexedDB. */
+  async saveStation(station) {
+    const db = await this._openCatalogDb();
+    if (!db || !station?.id || !db.objectStoreNames.contains('stations')) return false;
+    return new Promise(resolve => {
+      try {
+        const tx = db.transaction('stations', 'readwrite');
+        tx.objectStore('stations').put(station);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = tx.onabort = () => resolve(false);
       } catch (_) { resolve(false); }
     });
   }

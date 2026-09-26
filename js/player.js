@@ -295,6 +295,9 @@ class AudioPlayerManager {
         this.notifyState('PAUSED', 'CLIQUE PLAY PARA OUVIR', 'Autoplay bloqueado pelo navegador.');
       } else {
         this.notifyState('ERROR', 'STREAM INDISPONÍVEL', 'Não foi possível conectar ao fluxo de áudio.');
+        // Some browsers reject play() without dispatching a media error event.
+        // Still run the station's alternate-stream lookup in that case.
+        this.onStreamError?.(station, 'Não foi possível conectar ao fluxo de áudio.');
       }
     }
   }

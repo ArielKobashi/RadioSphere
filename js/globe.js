@@ -12,7 +12,7 @@ class GlobeManager {
     this.camera = null;
     this.clock = null;
     this.ellipsoid = Cesium.Ellipsoid.WGS84;
-    this.lightingEnabled = true;
+    this.lightingEnabled = !window.matchMedia('(max-width: 900px)').matches;
     this.markersDataSource = null;
     this.clusteringEnabled = localStorage.getItem('wrg_station_clustering') !== 'false';
 
@@ -67,10 +67,18 @@ class GlobeManager {
       animation: false,
       navigationHelpButton: false,
       fullscreenButton: false,
-      scene3DOnly: true
+      scene3DOnly: true,
+      useBrowserRecommendedResolution: true,
+      requestRenderMode: false,
+      msaaSamples: 1,
+      orderIndependentTranslucency: false,
+      shadows: false
     });
 
     this.scene = this.viewer.scene;
+    // Tablet GPUs often run at DPR 2–3; rendering every physical pixel can
+    // exhaust memory and leave an otherwise supported WebGL canvas black.
+    this.viewer.resolutionScale = window.matchMedia('(max-width: 900px)').matches ? 0.85 : 1;
     this.camera = this.viewer.camera;
     this.clock = this.viewer.clock;
 
@@ -158,6 +166,13 @@ class GlobeManager {
     }
 
     const baseLayer = this.viewer.imageryLayers.addImageryProvider(baseProvider);
+    baseProvider.errorEvent?.addEventListener(error => {
+      if (this.currentBasemap !== type || this._basemapFallbackActive) return;
+      console.warn(`[GlobeManager] Camada ${type} indisponível; tentando OpenStreetMap.`, error);
+      this._basemapFallbackActive = true;
+      this.setBasemap('osm');
+      this._basemapFallbackActive = false;
+    });
 
     // Se for modo Dark Canvas, adiciona a camada superior de contornos e rótulos de países
     if (type === 'dark') {
@@ -406,7 +421,7 @@ class GlobeManager {
 
     // Hundreds of city hubs plus nearby radios can exceed mobile GPU limits.
     // Keep every hub and a recent/priority sample of radio pins on the globe.
-    const renderLimit = 5000;
+    const renderLimit = window.matchMedia('(max-width: 900px)').matches ? 1000 : 5000;
     const cityHubs = stations.filter(station => station?.isDialsCityHub);
     const radioStations = stations.filter(station => station && !station.isDialsCityHub);
     if (stations.length > renderLimit) {
