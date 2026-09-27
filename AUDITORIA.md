@@ -152,13 +152,13 @@ Estações recebidas/válidas/offline/sem coordenadas/duplicadas, países, cidad
 ## Complemento — reconhecimento acústico, Brasil e troca de mapas
 
 - A inicialização agora percorre as páginas de `countrycode=BR` até a página curta ou o limite de segurança; inclui rádios sem coordenadas no catálogo, põe os pins brasileiros primeiro e os protege da limpeza de memória usada por descobertas posteriores. Somente registros geolocalizados podem aparecer no mapa.
-- A rádio tocando consulta metadados ICY/JSON por proxy same-origin. Reconhecimento acústico externo foi removido; sem metadados publicados pela estação, a faixa permanece não identificada.
+- A rádio tocando consulta metadados por proxy same-origin e, sem faixa publicada, usa ShazamIO no backend com uma amostra curta de áudio. ShazamIO não exige API Key paga, mas consulta endpoints não oficiais do Shazam e requer Python 3.10+, dependências, FFmpeg e internet.
 - O seletor mantém as quatro camadas, força redesenho após trocar e persiste a seleção. Os tiles ainda dependem de acesso às fontes cartográficas; a camada visual não foi conferida no navegador nesta sessão.
 - Verificação de código: 24 testes unitários passaram em execução sequencial, mais `node --check` dos JavaScripts, do servidor Node e dos testes.
 
 ## Complemento — reconhecimento sem chave e filtro global
 
-- A aplicação consulta primeiro metadata ICY/StreamTitle e endpoints comuns de Icecast/AzuraCast por um endpoint same-origin do servidor Node. Sem faixa publicada, o provider AudD recebe uma amostra acústica curta capturada pelo backend.
+- A aplicação consulta metadata ICY/StreamTitle e endpoints comuns de Icecast/AzuraCast por um endpoint same-origin do servidor Node. Sem faixa publicada, a estação aparece como não identificada.
 - O seletor de país carrega `/json/countries`; ao aplicar um código, percorre as páginas daquele país e atualiza lista/busca/globo, em vez de filtrar somente a amostra local.
 - Em falha final de reprodução, a aplicação procura primeiro outra entrada da mesma rádio/localidade e também tenta confirmar o stream publicado no Dials. O endereço de Capital FM que validamos vem do próprio catálogo, sem URL inventada.
 - Verificação anterior: 27 testes unitários; consulte o complemento Dials abaixo para a validação mais recente.

@@ -406,7 +406,7 @@ test('carrega todas as páginas brasileiras até a última página curta', async
   assert.equal(progress.at(-1).phase, 'ready');
 });
 
-test('reconhecimento acústico usa estação atual e expõe provider real', async () => {
+test('consulta Now Playing usa estação atual e identifica fonte como metadata da rádio', async () => {
   const context = loadBrowserScript('js/metadataManager.js');
   const manager = Object.create(context.window.MetadataManager.prototype);
   const station = { id: 'radio-br-1', streamUrl: 'https://radio.example/live' };
@@ -422,7 +422,7 @@ test('reconhecimento acústico usa estação atual e expõe provider real', asyn
   assert.equal(result.ok, true);
   assert.equal(passed.station, station);
   assert.equal(passed.signal.aborted, false);
-  assert.equal(track.source, 'AudD');
+  assert.equal(track.source, 'Metadados da rádio');
   assert.equal(track.status, 'IDENTIFIED');
 });
 
@@ -469,15 +469,15 @@ test('Capital FM Cascavel ganha link para fonte de escuta Tudo Rádio sem invent
   assert.equal(station.listenPageUrl, 'https://tudoradio.com/player/radio/986-capital-fm');
 });
 
-test('provider consulta metadata separadamente antes do fallback acústico', async () => {
+test('provider usa metadata publicada pela estação antes da análise acústica', async () => {
   const requests = [];
-  const context = loadBrowserScript('js/shazamRecognition.js', {
+  const context = loadBrowserScript('js/shazamIORecognitionProvider.js', {
     fetch: async (url, options) => {
       requests.push({ url, options });
       return { ok: true, json: async () => ({ source: 'ICY StreamTitle', track: { title: 'Faixa ao vivo', artist: 'Artista' } }) };
     }
   });
-  const provider = new context.window.ShazamRecognitionProvider();
+  const provider = new context.window.ShazamIORecognitionProvider();
   const result = await provider.identify({ station: { id: 'radio-1', streamUrl: 'https://radio.example/live' } });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, '/api/nowplaying');
@@ -485,27 +485,27 @@ test('provider consulta metadata separadamente antes do fallback acústico', asy
   assert.equal(result.source, 'ICY StreamTitle');
 });
 
-test('provider envia a identificação acústica ao backend e normaliza os campos retornados', async () => {
+test('provider chama o backend ShazamIO por áudio quando não há metadata', async () => {
   const requests = [];
-  const context = loadBrowserScript('js/shazamRecognition.js', {
+  const context = loadBrowserScript('js/shazamIORecognitionProvider.js', {
     fetch: async (url, options) => {
       requests.push({ url, options });
       return url === '/api/nowplaying'
         ? { ok: true, json: async () => ({ track: null }) }
-        : { ok: true, json: async () => ({ provider: 'AudD', track: {
-          title: 'Canção', artist: 'Artista', album: 'Disco', releaseDate: '2024-02-01',
-          duration: 185, artwork: 'https://img.example/cover.jpg', identifier: 'BR-ABC-24-00001', url: 'https://song.example'
+        : { ok: true, json: async () => ({ provider: 'ShazamIO', track: {
+          title: 'Canção', artist: 'Artista', album: 'Disco', identifier: '12345', url: 'https://shazam.com/track/12345'
         } }) };
     }
   });
-  const provider = new context.window.ShazamRecognitionProvider();
+  const provider = new context.window.ShazamIORecognitionProvider();
   const result = await provider.identify({ station: { id: 'radio-1', streamUrl: 'https://radio.example/live' } });
+  assert.equal(requests.length, 2);
   assert.equal(requests[1].url, '/api/music/identify');
   assert.equal(JSON.parse(requests[1].options.body).stationId, 'radio-1');
   assert.equal(result.method, 'acoustic');
-  assert.equal(result.album, 'Disco');
-  assert.equal(result.duration, 185);
+  assert.equal(result.title, 'Canção');
   assert.equal(result.confidence, undefined);
+  assert.equal(provider.automatic, true);
 });
 
 test('Tudo Rádio Dials valida o stream da emissora antes de consultar fontes alternativas', async () => {

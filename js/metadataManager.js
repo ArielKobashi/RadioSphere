@@ -6,12 +6,12 @@
  * - Camada 1: Metadados ICY de Stream (Icecast / Shoutcast StreamTitle via fetch com Icy-MetaData)
  * - Camada 2: Endpoints JSON de Estações Conhecidas (Icecast status-json.xsl / stats / AzuraCast)
  * - Camada 3: Diretório Radio Browser / Contexto de Programação
- * - Camada 4: Interface Modular AudioRecognitionProvider (AudD / ACRCloud / WebAudio Fingerprint)
+ * - Camada 4: ponto de extensão opcional para futuros provedores de reconhecimento
  */
 
 class AudioRecognitionProvider {
   /**
-   * Interface abstrata para provedores de reconhecimento acústico (ACRCloud, AudD, Shazam, etc.)
+   * Interface abstrata para futuros provedores independentes de metadados/reconhecimento.
    */
   async identify(audioBuffer) {
     // Implementação padrão: nenhum provedor externo configurado.
@@ -23,7 +23,7 @@ class AudioRecognitionProvider {
 class MusicRecognitionService {
   constructor(appStateManager) {
     this.state = appStateManager || window.appState;
-    this.pollIntervalMs = 20000;
+    this.pollIntervalMs = 60000;
     this.timer = null;
     this.abortController = null;
     this.currentStation = null;
@@ -32,7 +32,7 @@ class MusicRecognitionService {
     // Cache para evitar requisições redundantes
     this.lastDetectedRaw = '';
     this.consecutiveFailures = 0;
-    this.acousticDiagnostics = { provider: 'AudD', attempts: 0, lastDurationMs: null, captureMs: null, providerMs: null, lastError: '', capture: 'idle' };
+    this.recognitionDiagnostics = { provider: 'ShazamIO', attempts: 0, capture: 'idle', lastDurationMs: null, captureMs: null, providerMs: null, sampleBytes: null, lastError: '' };
 
     // Escuta mudanças de estado de reprodução
     if (this.state) {
@@ -123,7 +123,7 @@ class MusicRecognitionService {
 
     let result = null;
 
-    const timeoutId = setTimeout(() => this.abortController?.abort(), 5000);
+    const timeoutId = setTimeout(() => this.abortController?.abort(), 35000);
     try {
       // CAMADA 1: Tentativa de leitura de metadados ICY (Icecast / Shoutcast)
       result = await this._queryLayer1Icy(station.streamUrl, signal);
@@ -157,7 +157,7 @@ class MusicRecognitionService {
       this._applyTrackUpdate(result);
     } else {
       const visibleTrack = this.state.getState().currentTrack;
-      if (visibleTrack?.title && visibleTrack.method === 'acoustic') return;
+      if (visibleTrack?.title && ['provider', 'acoustic'].includes(visibleTrack.method)) return;
       // Quando não há metadados, expõe com clareza: NUNCA inventa títulos falsos!
       this._applyFallbackLiveState(station);
     }
@@ -309,16 +309,18 @@ class MusicRecognitionService {
    */
   async _queryLayer4Provider(signal) {
     try {
-      this.state?.setState({ currentTrack: { ...this.state.getState().currentTrack, status: 'SEARCHING', source: this.recognitionProvider.name || 'AudD' } });
-      const started = performance.now();
-      this.acousticDiagnostics.capture = 'capturing';
-      this.acousticDiagnostics.attempts++;
+      this.state?.setState({ currentTrack: { ...this.state.getState().currentTrack, status: 'SEARCHING', source: this.recognitionProvider.name || 'Reconhecimento' } });
+      this.recognitionDiagnostics.attempts++;
+      this.recognitionDiagnostics.capture = 'capturing';
       const result = await this.recognitionProvider.identify({ station: this.currentStation, signal, metadataFirst: false });
-      this.acousticDiagnostics.lastDurationMs = Math.round(performance.now() - started);
-      const diagnosticTimings = result?.diagnostics || this.recognitionProvider.lastDiagnostics;
-      this.acousticDiagnostics.captureMs = diagnosticTimings?.captureMs ?? null;
-      this.acousticDiagnostics.providerMs = diagnosticTimings?.providerMs ?? null;
-      this.acousticDiagnostics.capture = 'idle';
+      this.recognitionDiagnostics.capture = 'idle';
+      this.recognitionDiagnostics.captureMs = result?.diagnostics?.captureMs ?? null;
+      this.recognitionDiagnostics.providerMs = result?.diagnostics?.providerMs ?? null;
+      this.recognitionDiagnostics.sampleBytes = result?.diagnostics?.sampleBytes ?? null;
+      this.recognitionDiagnostics.lastDurationMs = result?.diagnostics
+        ? result.diagnostics.captureMs + result.diagnostics.providerMs
+        : null;
+      this.recognitionDiagnostics.lastError = result?.reason === 'cooldown' ? '' : (result?.reason || '');
       if (result && result.title) {
         return {
           title: result.title,
@@ -326,37 +328,43 @@ class MusicRecognitionService {
           album: result.album || '', artwork: result.artwork || '', releaseDate: result.releaseDate || '',
           duration: result.duration ?? null, identifier: result.identifier || '', url: result.url || '',
           rawTitle: `${result.artist ? result.artist + ' - ' : ''}${result.title}`,
-          source: result.source || 'provider',
+          source: result.source || this.recognitionProvider.name || 'provider',
           status: 'IDENTIFIED',
           confidence: result.confidence ?? null,
-          method: result.method || 'acoustic',
+          method: result.method || 'provider',
           timestamp: Date.now()
         };
       }
-      this.acousticDiagnostics.lastError = result?.reason === 'cooldown' ? '' : (result?.reason || 'no-match');
     } catch (error) {
-      this.acousticDiagnostics.capture = 'idle';
-      this.acousticDiagnostics.lastError = error?.message || 'provider-error';
+      this.recognitionDiagnostics.capture = 'idle';
+      this.recognitionDiagnostics.lastError = error?.message || 'provider-error';
     }
     return null;
   }
 
-  /** Reconhecimento acústico sob demanda pelo botão da estação. */
+  /** Reconhecimento sob demanda pela hierarquia do provider configurado. */
   async identifyCurrentStation() {
     if (!this.currentStation?.streamUrl || !this.recognitionProvider) {
       return { ok: false, reason: 'no-station' };
     }
-    this.acousticDiagnostics ||= { provider: this.recognitionProvider.name || 'AudD', attempts: 0, lastDurationMs: null, captureMs: null, providerMs: null, lastError: '', capture: 'idle' };
+    this.recognitionDiagnostics ||= { provider: this.recognitionProvider.name || 'RecognitionProvider', attempts: 0, capture: 'idle', lastDurationMs: null, captureMs: null, providerMs: null, sampleBytes: null, lastError: '' };
     this.abortController?.abort();
     this.abortController = new AbortController();
     const signal = this.abortController.signal;
+    this.recognitionDiagnostics.attempts++;
+    this.recognitionDiagnostics.capture = 'capturing';
     this.state?.setState({ currentTrack: {
-      title: '', artist: '', rawTitle: '', source: 'AudD', status: 'SEARCHING', method: 'acoustic',
+      title: '', artist: '', rawTitle: '', source: this.recognitionProvider.name || 'Reconhecimento', status: 'SEARCHING', method: 'acoustic',
       confidence: null, timestamp: Date.now()
     } });
     try {
       const result = await this.recognitionProvider.identify({ station: this.currentStation, signal, force: true });
       if (signal.aborted) return { ok: false, reason: 'cancelled' };
+      this.recognitionDiagnostics.capture = 'idle';
+      this.recognitionDiagnostics.captureMs = result.diagnostics?.captureMs ?? null;
+      this.recognitionDiagnostics.providerMs = result.diagnostics?.providerMs ?? null;
+      this.recognitionDiagnostics.sampleBytes = result.diagnostics?.sampleBytes ?? null;
+      this.recognitionDiagnostics.lastError = result.reason || '';
       if (!result?.title) {
         this._applyFallbackLiveState(this.currentStation);
         return { ok: false, reason: result?.reason || 'no-match' };
@@ -365,13 +373,13 @@ class MusicRecognitionService {
         title: result.title, artist: result.artist || '', rawTitle: result.rawTitle || '',
         album: result.album || '', artwork: result.artwork || '', releaseDate: result.releaseDate || '',
         duration: result.duration ?? null, identifier: result.identifier || '', url: result.url || '',
-        source: result.source || 'AudD', method: result.method || 'acoustic', status: 'IDENTIFIED',
+        source: result.source || 'Metadados da rádio', method: result.method || 'metadata', status: 'IDENTIFIED',
         confidence: result.confidence ?? null, timestamp: Date.now()
       });
-      this.acousticDiagnostics.captureMs = result.diagnostics?.captureMs ?? null;
-      this.acousticDiagnostics.providerMs = result.diagnostics?.providerMs ?? null;
       return { ok: true, track: result };
     } catch (error) {
+      this.recognitionDiagnostics.capture = 'idle';
+      this.recognitionDiagnostics.lastError = error?.message || 'provider-error';
       if (!signal.aborted) this._applyFallbackLiveState(this.currentStation);
       return { ok: false, reason: error?.message || 'unavailable' };
     }

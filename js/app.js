@@ -27,7 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Metadados Now Playing
   const metadataManager = new MusicRecognitionService(window.appState);
-  metadataManager.setRecognitionProvider(new StationMetadataProvider());
+  metadataManager.setRecognitionProvider(new ShazamIORecognitionProvider());
   window.metadataManager = metadataManager;
 
   // Registra Service Worker (PWA)
@@ -124,13 +124,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const stationNameDisplay = document.getElementById('playerStationName');
   const stationNowPlaying = document.getElementById('playerNowPlaying');
   window.appState.subscribeKey('currentTrack', track => {
-    const recognitionNote = document.getElementById('drawerShazamNote');
+    const recognitionNote = document.getElementById('trackMetadataNote');
     const artwork = document.getElementById('drawerTrackArtwork');
     const trackLink = document.getElementById('drawerTrackLink');
     if (recognitionNote && track?.title) {
-      recognitionNote.textContent = `${track.method === 'acoustic' ? '🎵 Música identificada por áudio' : 'Faixa informada pela rádio'}: ${[track.artist, track.title].filter(Boolean).join(' — ')}${track.album ? ` · ${track.album}` : ''}${track.releaseDate ? ` · ${track.releaseDate}` : ''}${Number.isFinite(track.duration) ? ` · ${Math.floor(track.duration / 60)}:${String(Math.floor(track.duration % 60)).padStart(2, '0')}` : ''}${track.identifier ? ` · ID ${track.identifier}` : ''} · ${track.source || 'fonte não informada'}`;
+      recognitionNote.textContent = `${track.method === 'acoustic' ? '🎵 Música identificada por áudio' : 'Faixa informada pela rádio'}: ${[track.artist, track.title].filter(Boolean).join(' — ')}${track.album ? ` · ${track.album}` : ''}${track.releaseDate ? ` · ${track.releaseDate}` : ''} · ${track.source || 'fonte não informada'}`;
     } else if (recognitionNote && track?.status === 'SEARCHING') {
-      recognitionNote.textContent = track.method === 'acoustic' ? '🎙️ Analisando áudio da transmissão…' : '🎵 Identificando música…';
+      recognitionNote.textContent = track.method === 'acoustic' ? '🎙️ Analisando áudio da transmissão…' : 'Consultando metadados publicados pela rádio…';
     }
     if (artwork) {
       const safeArtwork = /^https?:\/\//i.test(track?.artwork || '') ? track.artwork : '';
@@ -145,7 +145,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!stationNowPlaying) return;
     if (track?.title) {
       const label = [track.artist, track.title].filter(Boolean).join(' — ');
-      stationNowPlaying.textContent = `${track.method === 'acoustic' ? '♫ ' : ''}${label}`;
+      stationNowPlaying.textContent = label;
       stationNowPlaying.classList.add('has-track');
       stationNowPlaying.dataset.source = track.source || 'unknown';
       stationNowPlaying.title = [track.album && `Álbum: ${track.album}`, track.releaseDate && `Data: ${track.releaseDate}`, track.timestamp && `Identificada: ${new Date(track.timestamp).toLocaleString('pt-BR')}`, `Fonte: ${track.source || 'desconhecida'}`, track.confidence != null && `Confiança técnica: ${track.confidence}`].filter(Boolean).join(' · ');
@@ -353,6 +353,13 @@ document.addEventListener('DOMContentLoaded', () => {
       if (station.hasValidCoords) rememberMapStation(station);
     }
     const dialsIndex = new Map(cities.map(city => [city.name, []]));
+    const addDialsRecordToCity = (value, record) => {
+      const normalized = normalizePlace(value);
+      const cityName = cityLookup.get(normalized) || [...cityLookup].find(([municipality]) => normalized.startsWith(`${municipality} `))?.[1];
+      if (!cityName || !record?.id) return;
+      const rows = dialsIndex.get(cityName);
+      if (!rows.some(item => String(item.id) === String(record.id))) rows.push(record);
+    };
     try {
       const dialsCities = await tuRadioCatalog.getCities('PR');
       let nextCity = 0;
@@ -364,7 +371,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const result = await tuRadioCatalog.getCityStations(city, { forceRefresh });
             const name = city.slug.replace(/^\d+-/, '').replace(/-[a-z]{2}$/i, '').replace(/-/g, ' ');
             const officialName = [...dialsIndex.keys()].find(item => normalizePlace(item) === normalizePlace(name));
-            if (officialName) dialsIndex.set(officialName, result.stations || []);
+            for (const record of result.stations || []) {
+              // Dials pages are grouped by reception city. Also index the actual
+              // transmitter municipality so towns without a Dials page (like Toledo)
+              // still show the stations broadcasting from there.
+              addDialsRecordToCity(record.receptionCity || (officialName ? name : ''), record);
+              addDialsRecordToCity(record.transmitterCity, record);
+            }
           } catch (error) {
             console.warn(`[App] Dials indisponível para ${city.slug}:`, error.message);
           }
@@ -392,6 +405,31 @@ document.addEventListener('DOMContentLoaded', () => {
       await ensureDialsCityPin({ ...city, path: dialsPath }, dialsStations.length);
       const cityId = dialsPath.split('/').pop();
       center = allLoadedStations.get(`dials-city-${cityId}`) || null;
+    }
+    if (!center && city?.name) {
+      const cityId = city.ibgeCode || normalizePlace(city.name).replace(/\s+/g, '-');
+      let coordinates = await tuRadioCatalog.getCityCoordinates(`ibge-${cityId}`);
+      if (!coordinates || !Number.isFinite(coordinates.lat) || !Number.isFinite(coordinates.lon)) {
+        const stateName = brazilianStates.find(([uf]) => uf === city.state)?.[1] || city.state || '';
+        try {
+          const place = (await radioApi.geocodeLocation(`${city.name}, ${stateName}, Brasil`)).find(item => {
+            const resultState = normalizePlace(item.state);
+            const requestedState = normalizePlace(stateName);
+            return item.countryCode === 'BR' && (!resultState || resultState.includes(requestedState) || requestedState.includes(resultState));
+          });
+          if (place && Number.isFinite(place.lat) && Number.isFinite(place.lon)) {
+            coordinates = { lat: place.lat, lon: place.lon, source: 'OpenStreetMap Nominatim' };
+            await tuRadioCatalog.saveCityCoordinates(`ibge-${cityId}`, coordinates);
+          }
+        } catch (error) { console.warn(`[App] Não consegui localizar ${city.name} no mapa:`, error.message); }
+      }
+      if (coordinates && Number.isFinite(coordinates.lat) && Number.isFinite(coordinates.lon)) {
+        center = {
+          id: `ibge-city-${cityId}`, name: city.name, city: city.name, state: city.state,
+          country: 'Brasil', countryCode: 'BR', lat: coordinates.lat, lon: coordinates.lon,
+          hasValidCoords: true, source: coordinates.source || 'IBGE / OpenStreetMap'
+        };
+      }
     }
     const dialsPins = center && Number.isFinite(Number(center.lat)) && Number.isFinite(Number(center.lon))
       ? dialsStations.map((record, index) => {
@@ -779,11 +817,11 @@ document.addEventListener('DOMContentLoaded', () => {
           if (tuRadioSelectedUf === 'PR' && !tuRadioParanaCityIndex) await searchParanaStations();
           tuRadioBrowserCityStations = tuRadioSelectedUf === 'PR'
             ? tuRadioParanaCityIndex?.get(city.name) || [] : [];
-          tuRadioCityStations = tuRadioNationalStations.filter(item =>
+          const nationalCityStations = tuRadioNationalStations.filter(item =>
             item.state === city.state && [item.receptionCity, item.transmitterCity].some(value => normalizePlace(value) === normalizePlace(city.name || city.slug)));
-          if (!tuRadioCityStations.length && tuRadioSelectedUf === 'PR') {
-            tuRadioCityStations = tuRadioParanaDialsIndex?.get(city.name) || [];
-          }
+          const indexedCityStations = tuRadioSelectedUf === 'PR' ? (tuRadioParanaDialsIndex?.get(city.name) || []) : [];
+          tuRadioCityStations = [...new Map([...nationalCityStations, ...indexedCityStations]
+            .map(item => [`${item.source || 'Dials'}:${item.id}`, item])).values()];
           const dialsPath = city.dialsPath || (city.path?.startsWith('/dials/') ? city.path : '');
           if (dialsPath && !tuRadioCityStations.length) {
             const result = await tuRadioCatalog.getCityStations({ ...city, path: dialsPath });
@@ -1609,10 +1647,10 @@ document.addEventListener('DOMContentLoaded', () => {
         ${station.hasStream ? 'OUVIR ESTA RÁDIO' : 'TRANSMISSÃO INDISPONÍVEL'}
       </button>
 
-      <button class="drawer-shazam-btn" id="drawerShazamBtn" type="button" ${station.hasStream ? '' : 'disabled'}>IDENTIFICAR MÚSICA</button>
+      <button class="track-metadata-btn" id="trackMetadataButton" type="button" ${station.hasStream ? '' : 'disabled'}>IDENTIFICAR MÚSICA</button>
       <img class="drawer-track-artwork" id="drawerTrackArtwork" alt="Capa da música identificada" hidden>
       <a class="drawer-track-link" id="drawerTrackLink" target="_blank" rel="noopener noreferrer" hidden>ABRIR FAIXA</a>
-      <p class="drawer-shazam-note" id="drawerShazamNote" aria-live="polite">Mostra a faixa quando a própria rádio publica metadados. Não há reconhecimento acústico.</p>
+      <p class="track-metadata-note" id="trackMetadataNote" aria-live="polite">Usa o Now Playing da rádio e, se ausente, analisa 8 s de áudio pelo ShazamIO. Sem API Key; requer Python, FFmpeg e internet.</p>
       ${station.listenPageUrl ? `<a class="drawer-listen-btn" href="${Utils.escapeHtml(station.listenPageUrl)}" target="_blank" rel="noopener noreferrer">TENTAR OUVIR NO TUDO RÁDIO</a>` : ''}
 
       <details class="radio-debug"><summary>DEBUG RADIO</summary><div id="debugRadioDetails"></div></details>
@@ -1640,8 +1678,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updateRadioDiagnostics();
 
     const drawerListenBtn = document.getElementById('drawerListenBtn');
-    const recognitionNote = document.getElementById('drawerShazamNote');
-    const diagnosticStationId = station.id;
+    const recognitionNote = document.getElementById('trackMetadataNote');
     drawerListenBtn?.addEventListener('click', () => {
       if (currentStation?.hasStream) audioPlayer.playStation(currentStation);
     });
@@ -1668,18 +1705,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (currentStation?.dialsSourceRecord) renderStationDrawer(currentStation);
       }
     });
-    document.getElementById('drawerShazamBtn')?.addEventListener('click', async event => {
+    document.getElementById('trackMetadataButton')?.addEventListener('click', async event => {
       const button = event.currentTarget;
-      const note = document.getElementById('drawerShazamNote');
+      const note = document.getElementById('trackMetadataNote');
       if (!currentStation?.streamUrl) return;
       button.disabled = true;
       button.textContent = 'IDENTIFICANDO…';
       try {
         if (note) note.textContent = 'Consultando informações Now Playing publicadas pela rádio…';
         const result = await metadataManager.identifyCurrentStation();
-        if (!result.ok) throw new Error('A rádio não publicou metadados desta música.');
+        if (!result.ok) throw new Error('Não foi possível identificar pelo áudio nem pelos metadados da rádio.');
         Utils.showToast(`${result.track.source}: ${result.track.artist ? `${result.track.artist} — ` : ''}${result.track.title}`, 'success', 4500);
-        if (note) note.textContent = `♫ ${[result.track.artist, result.track.title].filter(Boolean).join(' — ')}${result.track.album ? ` · ${result.track.album}` : ''}${result.track.releaseDate ? ` · ${result.track.releaseDate}` : ''} · ${result.track.source || 'AudD'}`;
+        if (note) note.textContent = `♫ ${[result.track.artist, result.track.title].filter(Boolean).join(' — ')}${result.track.album ? ` · ${result.track.album}` : ''} · ${result.track.source || 'Metadados da rádio'}`;
       } catch (error) {
         if (note) note.textContent = error.message;
         Utils.showToast(error.message, 'error', 5000);
@@ -1721,12 +1758,12 @@ document.addEventListener('DOMContentLoaded', () => {
       ['Última verificação do diretório', streamState === 'unknown' ? 'Sem confirmação' : streamState === 'online' ? 'Online na última verificação' : 'Offline na última verificação'],
       ['Metadata / Now Playing', track.title ? `${track.artist ? `${track.artist} — ` : ''}${track.title} · ${track.source}` : 'Faixa não identificada'],
       ['Confiança técnica', track.confidence == null ? 'Não fornecida pelo provider' : String(track.confidence)],
-      ['Método de identificação', track.title ? (track.method === 'acoustic' ? 'Fingerprint acústico (AudD)' : 'Metadados publicados pela estação') : 'Aguardando identificação'],
-      ['Captura / buffer', `${metadataManager.acousticDiagnostics.capture} · trecho-alvo 8 s · backend FFmpeg`],
-      ['Provider / tentativas', `${metadataManager.acousticDiagnostics.provider} · ${metadataManager.acousticDiagnostics.attempts}`],
-      ['Tempo da solicitação acústica', metadataManager.acousticDiagnostics.lastDurationMs == null ? 'Ainda não medido' : `${metadataManager.acousticDiagnostics.lastDurationMs} ms`],
-      ['Tempo de captura / provider', `${metadataManager.acousticDiagnostics.captureMs ?? '—'} ms / ${metadataManager.acousticDiagnostics.providerMs ?? '—'} ms`],
-      ['Último diagnóstico acústico', metadataManager.acousticDiagnostics.lastError || 'Sem erro'],
+      ['Método de identificação', track.title ? (track.method === 'acoustic' ? 'Assinatura acústica via ShazamIO' : 'Metadados publicados pela estação') : 'Aguardando identificação'],
+      ['Captura / buffer', `${metadataManager.recognitionDiagnostics.capture} · amostra alvo 8 s · FFmpeg no backend`],
+      ['Provider / tentativas', `${metadataManager.recognitionDiagnostics.provider} · ${metadataManager.recognitionDiagnostics.attempts}`],
+      ['Tempo da amostra / ShazamIO', `${metadataManager.recognitionDiagnostics.captureMs ?? '—'} ms / ${metadataManager.recognitionDiagnostics.providerMs ?? '—'} ms`],
+      ['Tamanho da amostra', metadataManager.recognitionDiagnostics.sampleBytes == null ? 'Ainda não medido' : `${metadataManager.recognitionDiagnostics.sampleBytes} bytes`],
+      ['Último erro', metadataManager.recognitionDiagnostics.lastError || 'Nenhum'],
       ['Áudio', `${state.playbackState} · readyState ${audio.readyState} · networkState ${audio.networkState}`],
       ['CORS', 'Acesso de metadata não medido; reprodução nativa preservada'],
       ['Latência', 'Não medida pelo navegador neste player'],
@@ -1754,7 +1791,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tuRadioBrowserCityStations = [];
         const dialsPath = city.dialsPath || city.path;
         const cityUrl = `https://tudoradio.com${dialsPath}`;
-        tuRadioCityStations = tuRadioNationalStations.filter(item => item.cityPageUrl === cityUrl);
+          tuRadioCityStations = tuRadioNationalStations.filter(item => item.cityPageUrl === cityUrl);
         tuRadioProgress = `Carregando as rádios de ${city.slug.replace(/^\d+-/, '').replace(/-/g, ' ')}…`;
         renderUtilityPanel('dials');
         try {
@@ -1763,10 +1800,12 @@ document.addEventListener('DOMContentLoaded', () => {
           const indexedCity = city.state === 'PR'
             ? [...(tuRadioParanaCityIndex || [])].find(([name]) => normalizePlace(name) === normalizePlace(cityName)) : null;
           tuRadioBrowserCityStations = indexedCity?.[1] || [];
-          if (!tuRadioCityStations.length && tuRadioParanaDialsIndex) {
-            const indexedDialsCity = [...tuRadioParanaDialsIndex].find(([name]) => normalizePlace(name) === normalizePlace(cityName));
-            tuRadioCityStations = indexedDialsCity?.[1] || [];
-          }
+          const nationalCityStations = tuRadioNationalStations.filter(item =>
+            item.cityPageUrl === cityUrl || [item.receptionCity, item.transmitterCity].some(value => normalizePlace(value) === normalizePlace(cityName)));
+          const indexedDialsCity = city.state === 'PR'
+            ? [...(tuRadioParanaDialsIndex || [])].find(([name]) => normalizePlace(name) === normalizePlace(cityName)) : null;
+          tuRadioCityStations = [...new Map([...nationalCityStations, ...(indexedDialsCity?.[1] || [])]
+            .map(item => [`${item.source || 'Dials'}:${item.id}`, item])).values()];
           if (!tuRadioCityStations.length && dialsPath) {
             const result = await tuRadioCatalog.getCityStations({ ...city, path: dialsPath });
             tuRadioCityStations = result.stations || [];

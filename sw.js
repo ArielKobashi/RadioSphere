@@ -3,7 +3,7 @@
  * Estratégia de cache offline para App Shell PWA e navegação resiliente.
  */
 
-const CACHE_NAME = 'wrg-shell-v5';
+const CACHE_NAME = 'wrg-shell-v7';
 const APP_SHELL_ASSETS = [
   './',
   './index.html',
@@ -21,7 +21,7 @@ const APP_SHELL_ASSETS = [
   './js/search.js',
   './js/player.js',
   './js/audioVisualizer.js',
-  './js/shazamRecognition.js',
+  './js/shazamIORecognitionProvider.js',
   './js/metadataManager.js',
   './js/app.js'
 ];

@@ -71,7 +71,7 @@ button, a, input { -webkit-tap-highlight-color: transparent; }
 :focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: 2px; }
 .hud-btn:focus-visible, .time-btn:focus-visible, .speed-pill:focus-visible,
 .btn-play-pause:focus-visible, .btn-mute:focus-visible, .drawer-btn-fav:focus-visible,
-.drawer-btn-link:focus-visible, .drawer-btn-stop:focus-visible, .drawer-shazam-btn:focus-visible, .btn-close-drawer:focus-visible,
+.drawer-btn-link:focus-visible, .drawer-btn-stop:focus-visible, .track-metadata-btn:focus-visible, .btn-close-drawer:focus-visible,
 .dialog-input-group input:focus-visible, #globalSearchInput:focus-visible {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;

@@ -107,9 +107,9 @@ Para cada rádio Dials, o app primeiro confirma o cadastro/frequência, tenta va
 
 ## 🎵 Identificação de música
 
-O sistema consulta metadados ICY/Icecast/AzuraCast publicados pela estação, pelo backend local, sem API Key ou custo externo. A interface identifica a faixa como informação fornecida pela rádio. Se a estação não publicar metadados, o app informa que a música não foi identificada; não analisa o áudio nem adivinha faixas. Não há reconhecimento acústico nem modo offline.
+O sistema tenta primeiro os metadados ICY/Icecast/AzuraCast. Se a rádio não publicar a faixa, o backend captura 8 segundos do stream com FFmpeg e consulta a biblioteca gratuita [ShazamIO](https://github.com/shazamio/ShazamIO), sem API Key. O trecho de áudio é enviado pela internet aos servidores do Shazam para comparação; o projeto não o armazena. ShazamIO é um cliente não oficial que usa endpoints internos do Shazam, sujeitos a mudanças, bloqueios e limites de uso. O reconhecimento automático consulta no máximo uma vez por minuto por estação e usa cache local temporário.
 
-Para usar, execute `node server.js` e abra `http://localhost:8765`. O painel da estação consulta o Now Playing automaticamente enquanto a rádio toca; o botão **IDENTIFICAR MÚSICA** permite consultar novamente. Em hospedagem estática como GitHub Pages, o backend `/api/nowplaying` não está disponível.
+Para habilitar o reconhecimento, instale Python 3.10+, FFmpeg e as dependências com `python -m pip install -r requirements-recognition.txt` (no Windows, use `py -3 -m pip install -r requirements-recognition.txt`). Configure `FFMPEG_PATH` e `PYTHON_PATH` em `.env` se os executáveis não estiverem no PATH. Depois execute `node server.js` e abra `http://localhost:8765`. Sem Python/FFmpeg, metadados do stream continuam funcionando e o diagnóstico informa a dependência ausente. Em hospedagem estática como GitHub Pages, a identificação não funciona porque o backend não executa.
 
 ## 🔒 Segurança, CORS e Políticas de Áudio dos Navegadores
 

@@ -3,6 +3,8 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const dns = require('node:dns/promises');
+const { spawn } = require('node:child_process');
+const { Readable } = require('node:stream');
 
 const root = __dirname;
 try {
@@ -13,6 +15,11 @@ try {
 } catch (_) { /* .env local é opcional. */ }
 const port = Number(process.env.PORT) || 8765;
 const host = process.env.HOST || '127.0.0.1';
+const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
+const python = process.env.PYTHON_PATH || (process.platform === 'win32' ? 'py' : 'python3');
+const recognitionCache = new Map();
+const recognitionInFlight = new Set();
+const recognitionByIp = new Map();
 const tuRadioPageCache = new Map();
 const tuRadioProbeCache = new Map();
 const ibgeMunicipalityCache = new Map();
@@ -327,6 +334,129 @@ async function findStationNowPlaying(streamUrl) {
   return await readIcyTrack(safeUrl);
 }
 
+function captureRecognitionSample(streamUrl) {
+  return new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 14000);
+    fetchPublicUrl(streamUrl, { headers: { 'Icy-MetaData': '0', 'User-Agent': 'WorldRadioGlobe/1.0' }, signal: controller.signal })
+      .then(response => {
+        if (!response.ok || !response.body) throw new Error(`A rádio respondeu HTTP ${response.status}.`);
+        const decoder = spawn(ffmpeg, [
+          '-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-t', '8', '-vn',
+          '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-f', 'wav', 'pipe:1'
+        ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+        const chunks = [];
+        let bytes = 0;
+        let diagnostic = '';
+        let settled = false;
+        const finish = (error, sample) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          controller.abort();
+          if (error) reject(error); else resolve(sample);
+        };
+        decoder.stdout.on('data', chunk => {
+          bytes += chunk.length;
+          if (bytes > 1000000) { decoder.kill(); return finish(new Error('Amostra excedeu 1 MB.')); }
+          chunks.push(chunk);
+        });
+        decoder.stderr.on('data', chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-700); });
+        decoder.stdin.on('error', () => {});
+        decoder.on('error', error => finish(new Error(`FFmpeg indisponível: ${error.message}`)));
+        decoder.on('close', () => {
+          if (bytes < 8000) return finish(new Error(diagnostic || 'A rádio não forneceu áudio decodificável.'));
+          finish(null, Buffer.concat(chunks));
+        });
+        Readable.fromWeb(response.body).pipe(decoder.stdin);
+      })
+      .catch(error => { clearTimeout(timeout); controller.abort(); reject(error); });
+  });
+}
+
+function recognizeWithShazamIO(sample) {
+  return new Promise((resolve, reject) => {
+    const script = path.join(root, 'scripts', 'recognize_shazamio.py');
+    const args = process.platform === 'win32' && !process.env.PYTHON_PATH
+      ? ['-3', script]
+      : [script];
+    const child = spawn(python, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const chunks = [];
+    let stdoutBytes = 0;
+    let stderr = '';
+    let settled = false;
+    const timeout = setTimeout(() => { child.kill(); finish(new Error('Tempo limite do reconhecimento expirou.')); }, 22000);
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error); else resolve(result);
+    };
+    child.stdout.on('data', chunk => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > 200000) { child.kill(); return finish(new Error('Resposta do reconhecedor excedeu o limite.')); }
+      chunks.push(chunk);
+    });
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-1000); });
+    child.on('error', error => finish(new Error(`Python não encontrado. Instale Python 3.10+ e rode pip install -r requirements-recognition.txt. ${error.message}`)));
+    child.on('close', code => {
+      if (settled) return;
+      if (code !== 0) return finish(new Error(stderr || 'ShazamIO falhou. Verifique Python, dependências e conexão.'));
+      try { finish(null, JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch { finish(new Error('ShazamIO retornou uma resposta inválida.')); }
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(sample);
+  });
+}
+
+async function identifyWithShazamIO(req, res) {
+  if (!requestIsSameOrigin(req)) return json(res, 403, { error: 'Origem não autorizada.' });
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > 4096) return json(res, 413, { error: 'Pedido muito grande.' });
+  }
+  let stationKey = '';
+  try {
+    const input = JSON.parse(body || '{}');
+    const streamUrl = await validateStreamUrl(input.streamUrl);
+    stationKey = `${String(input.stationId || '').slice(0, 100)}|${streamUrl}`.slice(0, 1500);
+    const now = Date.now();
+    for (const [key, entry] of recognitionCache) if (entry.expiresAt <= now) recognitionCache.delete(key);
+    if (recognitionCache.size > 800) recognitionCache.delete(recognitionCache.keys().next().value);
+    if (recognitionByIp.size > 1000) {
+      for (const [key, timestamp] of recognitionByIp) if (now - timestamp > 300000) recognitionByIp.delete(key);
+      while (recognitionByIp.size > 900) recognitionByIp.delete(recognitionByIp.keys().next().value);
+    }
+    const cached = recognitionCache.get(stationKey);
+    if (cached) return json(res, 200, { ...cached.payload, cached: true });
+    if (recognitionInFlight.has(stationKey)) return json(res, 429, { error: 'Esta rádio já está sendo analisada.' });
+    const ip = req.socket.remoteAddress || 'unknown';
+    if (now - (recognitionByIp.get(ip) || 0) < 10000) return json(res, 429, { error: 'Aguarde antes de pedir outra análise.' });
+    recognitionByIp.set(ip, now);
+    recognitionInFlight.add(stationKey);
+    const captureStarted = Date.now();
+    const sample = await captureRecognitionSample(streamUrl);
+    const captureMs = Date.now() - captureStarted;
+    const providerStarted = Date.now();
+    const result = await recognizeWithShazamIO(sample);
+    const providerMs = Date.now() - providerStarted;
+    const payload = {
+      provider: 'ShazamIO',
+      diagnostics: { captureMs, providerMs, sampleBytes: sample.length },
+      track: result.track || null,
+      reason: result.track ? null : 'no-match'
+    };
+    recognitionCache.set(stationKey, { payload, expiresAt: now + 45000 });
+    return json(res, 200, payload);
+  } catch (error) {
+    return json(res, 502, { error: error.message || 'Falha no reconhecimento com ShazamIO.' });
+  } finally {
+    if (stationKey) recognitionInFlight.delete(stationKey);
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS' && req.url?.startsWith('/api/')) { res.writeHead(204, { 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
   if (req.method === 'POST' && req.url === '/api/nowplaying') {
@@ -339,6 +469,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { track, source: track?.source || null, reason: track ? null : 'station-does-not-publish-track-metadata' });
     } catch (error) { return json(res, 400, { error: error.message || 'Endereço do stream inválido.' }); }
   }
+  if (req.method === 'POST' && req.url === '/api/music/identify') return identifyWithShazamIO(req, res);
   if (req.method === 'GET' && req.url?.startsWith('/api/tudoradio/cities?')) {
     try {
       const params = new URL(req.url, 'http://localhost').searchParams;
