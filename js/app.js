@@ -339,6 +339,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function addBundledToledoPins(stations) {
+    const latitude = -24.7246;
+    const longitude = -53.7412;
+    stations.forEach((record, index) => {
+      const station = tuRadioCatalog.toUnverifiedStation(record);
+      const distance = Math.min(12000, 3500 + 1800 * Math.sqrt(index + 1));
+      const angle = index * 2.399963229728653;
+      const lonScale = Math.max(0.15, Math.cos(latitude * Math.PI / 180));
+      const pin = {
+        ...station,
+        lat: latitude + Math.sin(angle) * distance / 111320,
+        lon: longitude + Math.cos(angle) * distance / (111320 * lonScale),
+        hasValidCoords: true,
+        locationAccuracy: 'city',
+        dialsApproximatePin: true
+      };
+      priorityStationIds.add(pin.id);
+      rememberMapStation(pin);
+    });
+    refreshGlobeStations();
+  }
+
   async function searchParanaStations({ onProgress = () => {}, forceRefresh = false } = {}) {
     if (tuRadioParanaCityIndex && !forceRefresh) return tuRadioParanaCityIndex;
     const cities = await tuRadioCatalog.getParanaMunicipalities();
@@ -463,7 +485,10 @@ document.addEventListener('DOMContentLoaded', () => {
         return { ...mapStation, lat, lon, hasValidCoords: true, locationAccuracy: 'city', dialsApproximatePin: true };
       }) : [];
     cityDetailStations = [...dialsPins, ...browserStations.filter(item => item.hasValidCoords)];
-    cityDetailStations.forEach(item => allLoadedStations.set(item.id, item));
+    cityDetailStations.forEach(item => {
+      allLoadedStations.set(item.id, item);
+      if (item.dialsApproximatePin) priorityStationIds.add(item.id);
+    });
     if (center?.id) allLoadedStations.delete(center.id);
     globe.setClusteringEnabled(false);
     syncClusteringControl();
@@ -1898,6 +1923,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   loadInitialStations();
 
+  // Keep Toledo's transmitter records in the map catalog so its pins appear
+  // as soon as the Paraná viewport is visible, without requiring a city scan.
+  loadBundledToledoStations({ state: 'PR', name: 'Toledo' }).then(addBundledToledoPins);
+
   // Reuse the complete Brazilian Dials import and its city pins after reload.
   // This only reads IndexedDB; it does not contact Tudo Rádio or geocode again.
   tuRadioCatalog.getSavedNationalCatalog().then(async saved => {
@@ -1912,6 +1941,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 10. Varredura por Viewport
   const handleViewportStations = Utils.debounce(async ({ west, south, east, north, altitude }) => {
+    const viewportTouchesParana = west <= -48 && east >= -55 && south <= -22.3 && north >= -27;
+    const clusteringPreferred = localStorage.getItem('wrg_station_clustering') !== 'false';
+    const showLocalPinsSeparately = viewportTouchesParana && altitude < 1200000;
+    globe.setClusteringEnabled(showLocalPinsSeparately ? false : clusteringPreferred);
+    syncClusteringControl();
     refreshGlobeStations();
     if (altitude > 12000000) return;
 
