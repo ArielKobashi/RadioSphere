@@ -364,17 +364,26 @@ class TuRadioCatalogClient {
     const isAnatel = dialsStation.source === 'Anatel';
     const isDirectory = dialsStation.source === 'Tudo Rádio';
     const isRadiosBrasil = dialsStation.source === 'Radios Brasil';
+    const isRadiosCom = dialsStation.source === 'Radios.com.br';
+    const latitude = dialsStation.latitude;
+    const longitude = dialsStation.longitude;
+    const hasCoordinates = latitude !== null && latitude !== undefined && latitude !== '' &&
+      longitude !== null && longitude !== undefined && longitude !== '' &&
+      Number.isFinite(Number(latitude)) && Number.isFinite(Number(longitude));
+    const frequencyTag = dialsStation.frequency != null && dialsStation.band
+      ? `${dialsStation.frequency} ${dialsStation.band}` : null;
     return {
-      id: `${isAnatel ? 'anatel' : 'tudoradio'}-${dialsStation.id}`, sourceId: dialsStation.id,
+      id: `${isAnatel ? 'anatel' : isRadiosCom ? 'radioscom' : 'tudoradio'}-${dialsStation.id}`, sourceId: dialsStation.id,
       name: dialsStation.name, streamUrl: null, hasStream: false, isHttps: false,
-      hasValidCoords: isAnatel && Number.isFinite(Number(dialsStation.latitude)) && Number.isFinite(Number(dialsStation.longitude)),
-      lat: isAnatel ? Number(dialsStation.latitude) : null, lon: isAnatel ? Number(dialsStation.longitude) : null,
+      hasValidCoords: (isAnatel || isRadiosCom) && hasCoordinates,
+      lat: (isAnatel || isRadiosCom) && hasCoordinates ? Number(latitude) : null,
+      lon: (isAnatel || isRadiosCom) && hasCoordinates ? Number(longitude) : null,
       country: 'Brasil', countryCode: 'BR',
       state: dialsStation.state, city: dialsStation.transmitterCity || dialsStation.receptionCity,
-      language: 'português', tags: [dialsStation.band, `${dialsStation.frequency} ${dialsStation.band}`].filter(Boolean),
+      language: 'português', tags: [dialsStation.band, frequencyTag].filter(Boolean),
       favicon: null, codec: 'Não validado', bitrate: 0, votes: 0, clickCount: 0,
       homepage: dialsStation.homepage, lastCheckOk: false, lastCheckStatus: 'unknown', lastCheckTime: null,
-      nowPlaying: null, metadataAvailable: false, locationAccuracy: isAnatel ? 'station' : 'unknown', source: isAnatel ? 'Anatel · radiodifusão' : isDirectory ? 'Tudo Rádio' : isRadiosBrasil ? 'Radios Brasil' : 'Tudo Rádio Dials',
+      nowPlaying: null, metadataAvailable: false, locationAccuracy: isAnatel ? 'station' : isRadiosCom ? (dialsStation.locationAccuracy || 'municipality') : 'unknown', source: isAnatel ? 'Anatel · radiodifusão' : isDirectory ? 'Tudo Rádio' : isRadiosBrasil ? 'Radios Brasil' : isRadiosCom ? 'Radios.com.br' : 'Tudo Rádio Dials',
       dialsCandidateStreamUrl: dialsStation.streamUrl, dialsCandidateStreamUrls: [...new Set([dialsStation.streamUrl, ...(dialsStation.alternateStreamUrls || [])].filter(Boolean))], dialsSourceRecord: dialsStation,
       dialsId: dialsStation.id, dialsFrequency: dialsStation.frequency, dialsBand: dialsStation.band,
       dialsSignal: dialsStation.signal, dialsRds: dialsStation.rds,
