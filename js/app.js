@@ -326,6 +326,19 @@ document.addEventListener('DOMContentLoaded', () => {
     return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   }
 
+  async function loadBundledToledoStations(city) {
+    if (city?.state !== 'PR' || normalizePlace(city.name || city.slug) !== 'toledo') return [];
+    try {
+      const response = await fetch('data/tudoradio/municipalities/4127700-toledo.json', { cache: 'no-cache' });
+      if (!response.ok) return [];
+      const catalog = await response.json();
+      return Array.isArray(catalog.stations) ? catalog.stations : [];
+    } catch (error) {
+      console.warn('[App] Não consegui ler o catálogo local de Toledo:', error.message);
+      return [];
+    }
+  }
+
   async function searchParanaStations({ onProgress = () => {}, forceRefresh = false } = {}) {
     if (tuRadioParanaCityIndex && !forceRefresh) return tuRadioParanaCityIndex;
     const cities = await tuRadioCatalog.getParanaMunicipalities();
@@ -389,6 +402,9 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
       console.warn('[App] Não consegui consultar o índice Dials do Paraná:', error.message);
     }
+    for (const record of await loadBundledToledoStations({ state: 'PR', name: 'Toledo' })) {
+      addDialsRecordToCity(record.transmitterCity || 'Toledo', record);
+    }
     tuRadioParanaCityIndex = index;
     tuRadioParanaDialsIndex = dialsIndex;
     tuRadioMunicipalityCounts = new Map([...index].map(([name, rows]) => [name, rows.length + (dialsIndex.get(name)?.length || 0)]));
@@ -408,7 +424,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (!center && city?.name) {
       const cityId = city.ibgeCode || normalizePlace(city.name).replace(/\s+/g, '-');
-      let coordinates = await tuRadioCatalog.getCityCoordinates(`ibge-${cityId}`);
+      const isToledo = city.state === 'PR' && normalizePlace(city.name) === 'toledo';
+      let coordinates = isToledo
+        ? { lat: -24.7246, lon: -53.7412, source: 'Catálogo local · Toledo PR' }
+        : await tuRadioCatalog.getCityCoordinates(`ibge-${cityId}`);
       if (!coordinates || !Number.isFinite(coordinates.lat) || !Number.isFinite(coordinates.lon)) {
         const stateName = brazilianStates.find(([uf]) => uf === city.state)?.[1] || city.state || '';
         try {
@@ -434,7 +453,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const dialsPins = center && Number.isFinite(Number(center.lat)) && Number.isFinite(Number(center.lon))
       ? dialsStations.map((record, index) => {
         const mapStation = tuRadioCatalog.toUnverifiedStation(record);
-        const distance = Math.min(2200, 120 + 105 * Math.sqrt(index + 1));
+        const distance = Math.min(12000, 3500 + 1800 * Math.sqrt(index + 1));
         const angle = index * 2.399963229728653;
         const latitude = Number(center.lat);
         const longitude = Number(center.lon);
@@ -814,13 +833,19 @@ document.addEventListener('DOMContentLoaded', () => {
         tuRadioProgress = `Buscando rádios de ${city.name || city.slug} nos bancos…`;
         renderUtilityPanel('dials');
         try {
-          if (tuRadioSelectedUf === 'PR' && !tuRadioParanaCityIndex) await searchParanaStations();
+          const isToledo = tuRadioSelectedUf === 'PR' && normalizePlace(city.name || city.slug) === 'toledo';
+          if (tuRadioSelectedUf === 'PR' && !tuRadioParanaCityIndex && !isToledo) await searchParanaStations();
+          const loadedStations = [...(radioApi.catalogStations?.values?.() || []), ...allLoadedStations.values()];
           tuRadioBrowserCityStations = tuRadioSelectedUf === 'PR'
-            ? tuRadioParanaCityIndex?.get(city.name) || [] : [];
+            ? (isToledo
+              ? [...new Map(loadedStations.filter(item => normalizePlace(item.city) === 'toledo').map(item => [item.id, item])).values()]
+              : tuRadioParanaCityIndex?.get(city.name) || [])
+            : [];
           const nationalCityStations = tuRadioNationalStations.filter(item =>
             item.state === city.state && [item.receptionCity, item.transmitterCity].some(value => normalizePlace(value) === normalizePlace(city.name || city.slug)));
           const indexedCityStations = tuRadioSelectedUf === 'PR' ? (tuRadioParanaDialsIndex?.get(city.name) || []) : [];
-          tuRadioCityStations = [...new Map([...nationalCityStations, ...indexedCityStations]
+          const bundledCityStations = await loadBundledToledoStations(city);
+          tuRadioCityStations = [...new Map([...nationalCityStations, ...indexedCityStations, ...bundledCityStations]
             .map(item => [`${item.source || 'Dials'}:${item.id}`, item])).values()];
           const dialsPath = city.dialsPath || (city.path?.startsWith('/dials/') ? city.path : '');
           if (dialsPath && !tuRadioCityStations.length) {
@@ -1804,7 +1829,8 @@ document.addEventListener('DOMContentLoaded', () => {
             item.cityPageUrl === cityUrl || [item.receptionCity, item.transmitterCity].some(value => normalizePlace(value) === normalizePlace(cityName)));
           const indexedDialsCity = city.state === 'PR'
             ? [...(tuRadioParanaDialsIndex || [])].find(([name]) => normalizePlace(name) === normalizePlace(cityName)) : null;
-          tuRadioCityStations = [...new Map([...nationalCityStations, ...(indexedDialsCity?.[1] || [])]
+          const bundledCityStations = await loadBundledToledoStations(city);
+          tuRadioCityStations = [...new Map([...nationalCityStations, ...(indexedDialsCity?.[1] || []), ...bundledCityStations]
             .map(item => [`${item.source || 'Dials'}:${item.id}`, item])).values()];
           if (!tuRadioCityStations.length && dialsPath) {
             const result = await tuRadioCatalog.getCityStations({ ...city, path: dialsPath });

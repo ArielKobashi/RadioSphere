@@ -3,7 +3,7 @@
  * Estratégia de cache offline para App Shell PWA e navegação resiliente.
  */
 
-const CACHE_NAME = 'wrg-shell-v7';
+const CACHE_NAME = 'wrg-shell-v8';
 const APP_SHELL_ASSETS = [
   './',
   './index.html',
@@ -23,7 +23,8 @@ const APP_SHELL_ASSETS = [
   './js/audioVisualizer.js',
   './js/shazamIORecognitionProvider.js',
   './js/metadataManager.js',
-  './js/app.js'
+  './js/app.js?v=8',
+  './data/tudoradio/municipalities/4127700-toledo.json'
 ];
 
 // Instalação: Pré-carrega o App Shell
