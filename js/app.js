@@ -27,7 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Metadados Now Playing
   const metadataManager = new MusicRecognitionService(window.appState);
-  metadataManager.setRecognitionProvider(new AudDRecognitionProvider());
+  metadataManager.setRecognitionProvider(new StationMetadataProvider());
   window.metadataManager = metadataManager;
 
   // Registra Service Worker (PWA)
@@ -1612,7 +1612,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <button class="drawer-shazam-btn" id="drawerShazamBtn" type="button" ${station.hasStream ? '' : 'disabled'}>IDENTIFICAR MÚSICA</button>
       <img class="drawer-track-artwork" id="drawerTrackArtwork" alt="Capa da música identificada" hidden>
       <a class="drawer-track-link" id="drawerTrackLink" target="_blank" rel="noopener noreferrer" hidden>ABRIR FAIXA</a>
-      <p class="drawer-shazam-note" id="drawerShazamNote" aria-live="polite">Reconhecimento acústico automático enquanto esta rádio estiver tocando. Metadados da estação são exibidos separadamente.</p>
+      <p class="drawer-shazam-note" id="drawerShazamNote" aria-live="polite">Mostra a faixa quando a própria rádio publica metadados. Não há reconhecimento acústico.</p>
       ${station.listenPageUrl ? `<a class="drawer-listen-btn" href="${Utils.escapeHtml(station.listenPageUrl)}" target="_blank" rel="noopener noreferrer">TENTAR OUVIR NO TUDO RÁDIO</a>` : ''}
 
       <details class="radio-debug"><summary>DEBUG RADIO</summary><div id="debugRadioDetails"></div></details>
@@ -1642,14 +1642,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const drawerListenBtn = document.getElementById('drawerListenBtn');
     const recognitionNote = document.getElementById('drawerShazamNote');
     const diagnosticStationId = station.id;
-    metadataManager.recognitionProvider.status().then(status => {
-      if (currentStation?.id !== diagnosticStationId || !recognitionNote || status.configured && status.ffmpeg) return;
-      recognitionNote.textContent = !status.configured
-        ? 'Reconhecimento acústico indisponível: configure AUDD_API_TOKEN no servidor.'
-        : 'Reconhecimento acústico indisponível: FFmpeg não encontrado no servidor.';
-    }).catch(() => {
-      if (currentStation?.id === diagnosticStationId && recognitionNote) recognitionNote.textContent = 'Reconhecimento acústico requer o backend Node deste projeto.';
-    });
     drawerListenBtn?.addEventListener('click', () => {
       if (currentStation?.hasStream) audioPlayer.playStation(currentStation);
     });
@@ -1683,9 +1675,9 @@ document.addEventListener('DOMContentLoaded', () => {
       button.disabled = true;
       button.textContent = 'IDENTIFICANDO…';
       try {
-        if (note) note.textContent = '🎙️ Analisando áudio da transmissão…';
+        if (note) note.textContent = 'Consultando informações Now Playing publicadas pela rádio…';
         const result = await metadataManager.identifyCurrentStation();
-        if (!result.ok) throw new Error(result.reason === 'no-match' ? 'Não foi possível identificar esta música.' : result.reason || 'Não foi possível identificar esta música.');
+        if (!result.ok) throw new Error('A rádio não publicou metadados desta música.');
         Utils.showToast(`${result.track.source}: ${result.track.artist ? `${result.track.artist} — ` : ''}${result.track.title}`, 'success', 4500);
         if (note) note.textContent = `♫ ${[result.track.artist, result.track.title].filter(Boolean).join(' — ')}${result.track.album ? ` · ${result.track.album}` : ''}${result.track.releaseDate ? ` · ${result.track.releaseDate}` : ''} · ${result.track.source || 'AudD'}`;
       } catch (error) {
