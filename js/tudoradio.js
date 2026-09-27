@@ -361,16 +361,21 @@ class TuRadioCatalogClient {
   }
 
   toUnverifiedStation(dialsStation) {
+    const isAnatel = dialsStation.source === 'Anatel';
+    const isDirectory = dialsStation.source === 'Tudo Rádio';
+    const isRadiosBrasil = dialsStation.source === 'Radios Brasil';
     return {
-      id: `tudoradio-${dialsStation.id}`, sourceId: dialsStation.id,
+      id: `${isAnatel ? 'anatel' : 'tudoradio'}-${dialsStation.id}`, sourceId: dialsStation.id,
       name: dialsStation.name, streamUrl: null, hasStream: false, isHttps: false,
-      hasValidCoords: false, lat: null, lon: null, country: 'Brasil', countryCode: 'BR',
+      hasValidCoords: isAnatel && Number.isFinite(Number(dialsStation.latitude)) && Number.isFinite(Number(dialsStation.longitude)),
+      lat: isAnatel ? Number(dialsStation.latitude) : null, lon: isAnatel ? Number(dialsStation.longitude) : null,
+      country: 'Brasil', countryCode: 'BR',
       state: dialsStation.state, city: dialsStation.transmitterCity || dialsStation.receptionCity,
       language: 'português', tags: [dialsStation.band, `${dialsStation.frequency} ${dialsStation.band}`].filter(Boolean),
       favicon: null, codec: 'Não validado', bitrate: 0, votes: 0, clickCount: 0,
       homepage: dialsStation.homepage, lastCheckOk: false, lastCheckStatus: 'unknown', lastCheckTime: null,
-      nowPlaying: null, metadataAvailable: false, locationAccuracy: 'unknown', source: 'Tudo Rádio Dials',
-      dialsCandidateStreamUrl: dialsStation.streamUrl, dialsSourceRecord: dialsStation,
+      nowPlaying: null, metadataAvailable: false, locationAccuracy: isAnatel ? 'station' : 'unknown', source: isAnatel ? 'Anatel · radiodifusão' : isDirectory ? 'Tudo Rádio' : isRadiosBrasil ? 'Radios Brasil' : 'Tudo Rádio Dials',
+      dialsCandidateStreamUrl: dialsStation.streamUrl, dialsCandidateStreamUrls: [...new Set([dialsStation.streamUrl, ...(dialsStation.alternateStreamUrls || [])].filter(Boolean))], dialsSourceRecord: dialsStation,
       dialsId: dialsStation.id, dialsFrequency: dialsStation.frequency, dialsBand: dialsStation.band,
       dialsSignal: dialsStation.signal, dialsRds: dialsStation.rds,
       dialsClassAndCallsign: dialsStation.classAndCallsign, dialsTechnical: dialsStation.technical,
@@ -398,10 +403,12 @@ class TuRadioCatalogClient {
   async findWorkingAlternative(dialsStation, radioApi, { signal, maxCandidates = 5, excludeStreamUrls } = {}) {
     const dialsName = this._normalizeName(dialsStation.name);
     if (!dialsName) return null;
-    const candidates = await radioApi.searchStations({
-      name: dialsStation.name, countryCode: 'BR', limit: 40, hasGeoOnly: false,
+    const searchTerms = [...new Set([dialsStation.name, dialsStation.legalName, dialsStation.callsign, ...(dialsStation.alternateNames || [])].map(value => String(value || '').trim()).filter(value => value.length >= 3))];
+    const candidateResults = await Promise.all(searchTerms.map(name => radioApi.searchStations({
+      name, countryCode: 'BR', limit: 40, hasGeoOnly: false,
       hideBroken: false, order: 'clickcount', signal
-    }).catch(() => []);
+    }).catch(() => [])));
+    const candidates = [...new Map(candidateResults.flat().map(candidate => [candidate.id, candidate])).values()];
     const normalized = candidates.map(candidate => {
       const candidateName = this._normalizeName(candidate.name);
       const exact = candidateName === dialsName;
@@ -434,11 +441,21 @@ class TuRadioCatalogClient {
   }
 
   async validateAndResolve(dialsStation, radioApi, options = {}) {
-    const recordValid = Boolean(dialsStation?.id && dialsStation?.name && Number.isFinite(Number(dialsStation.frequency)) && dialsStation.cityPageUrl);
-    if (!recordValid) throw new Error('O registro Dials não passou pela validação de dados básicos.');
-    let checked = await this.validateStream(dialsStation.streamUrl, options).catch(error => ({ valid: false, reason: error.message }));
-    if (checked.valid && options.excludeStreamUrls?.has(String(checked.url || dialsStation.streamUrl).trim().toLowerCase())) {
-      checked = { ...checked, valid: false, reason: 'Esse endereço já falhou durante esta sessão.' };
+    const isAnatel = dialsStation?.source === 'Anatel';
+    const isDirectory = dialsStation?.source === 'Tudo Rádio';
+    const isRadiosBrasil = dialsStation?.source === 'Radios Brasil';
+    const sourceLabel = isDirectory ? 'Tudo Rádio' : isRadiosBrasil ? 'Radios Brasil' : 'Tudo Rádio Dials';
+    const recordValid = Boolean(dialsStation?.id && dialsStation?.name && Number.isFinite(Number(dialsStation.frequency)) && (isAnatel || dialsStation.cityPageUrl));
+    if (!recordValid) throw new Error('O registro da estação não passou pela validação de dados básicos.');
+    const directUrls = [...new Set([dialsStation.streamUrl, ...(dialsStation.alternateStreamUrls || [])].filter(Boolean))];
+    let checked = { valid: false, reason: isAnatel ? 'O cadastro da Anatel não fornece URL de áudio; buscando uma transmissão correspondente.' : isDirectory || isRadiosBrasil ? 'O cadastro não tem um link de transmissão associado; buscando uma alternativa.' : 'O Dials não forneceu uma URL de transmissão.' };
+    for (const directUrl of directUrls) {
+      if (options.excludeStreamUrls?.has(String(directUrl).trim().toLowerCase())) {
+        checked = { valid: false, reason: 'Esse endereço já falhou durante esta sessão.' };
+        continue;
+      }
+      checked = await this.validateStream(directUrl, options).catch(error => ({ valid: false, reason: error.message }));
+      if (checked.valid) break;
     }
     let station;
     const excludeStreamUrls = new Set(options.excludeStreamUrls || []);
@@ -448,7 +465,7 @@ class TuRadioCatalogClient {
     }).catch(() => []);
     if (checked.valid) {
       station = {
-        id: `tudoradio-${dialsStation.id}`, sourceId: dialsStation.id,
+        id: `${isAnatel ? 'anatel' : 'tudoradio'}-${dialsStation.id}`, sourceId: dialsStation.id,
         name: dialsStation.name, streamUrl: checked.url || dialsStation.streamUrl, hasStream: true,
         isHttps: String(checked.url || dialsStation.streamUrl).startsWith('https://'),
         hasValidCoords: false, lat: null, lon: null, country: 'Brasil', countryCode: 'BR',
@@ -457,7 +474,7 @@ class TuRadioCatalogClient {
         favicon: null, codec: checked.contentType || 'ÁUDIO', bitrate: 0, votes: 0, clickCount: 0,
         homepage: dialsStation.homepage, lastCheckOk: true, lastCheckStatus: 'online',
         lastCheckTime: new Date().toISOString(), nowPlaying: null, metadataAvailable: false,
-        locationAccuracy: 'unknown', source: 'Tudo Rádio Dials', streamValidation: checked
+        locationAccuracy: isAnatel ? 'station' : 'unknown', source: isAnatel ? 'Anatel · radiodifusão' : sourceLabel, streamValidation: checked
       };
     } else station = alternatives[0] || null;
     if (station) {
@@ -469,23 +486,23 @@ class TuRadioCatalogClient {
         dialsValidated: true, dialsCity: dialsStation.receptionCity, listenPageUrl: dialsStation.listenPageUrl,
         dialsDetailsUrl: dialsStation.detailsUrl, dialsCityPageUrl: dialsStation.cityPageUrl,
         streamCandidates: [
-          ...(checked.valid ? [{ url: checked.url || dialsStation.streamUrl, source: 'Tudo Rádio Dials', validated: true }] : []),
+          ...(checked.valid ? [{ url: checked.url || dialsStation.streamUrl, source: isAnatel ? (dialsStation.streamProvider || (dialsStation.directoryDetailsUrl ? 'Tudo Rádio' : 'Anatel')) : (dialsStation.streamProvider || sourceLabel), validated: true }] : []),
           ...alternatives.map(item => ({ url: item.streamUrl, source: 'Radio Browser', validated: true }))
         ],
         dialsSourceRecord: dialsStation
       };
-      return { station, recordValid: true, streamValid: true, streamSource: checked.valid ? 'Tudo Rádio Dials' : 'Radio Browser', directCheck: checked };
+      return { station, recordValid: true, streamValid: true, streamSource: checked.valid ? (isAnatel ? 'Tudo Rádio' : dialsStation.streamProvider || sourceLabel) : 'Radio Browser', directCheck: checked };
     }
 
     station = {
-      id: `tudoradio-${dialsStation.id}`, sourceId: dialsStation.id,
+      id: `${isAnatel ? 'anatel' : 'tudoradio'}-${dialsStation.id}`, sourceId: dialsStation.id,
       name: dialsStation.name, streamUrl: null, hasStream: false, isHttps: false,
       hasValidCoords: false, lat: null, lon: null, country: 'Brasil', countryCode: 'BR',
       state: dialsStation.state, city: dialsStation.transmitterCity || dialsStation.receptionCity,
       language: 'português', tags: [dialsStation.band, `${dialsStation.frequency} ${dialsStation.band}`].filter(Boolean),
       favicon: null, codec: 'Não validado', bitrate: 0, votes: 0, clickCount: 0,
       homepage: dialsStation.homepage, lastCheckOk: false, lastCheckStatus: 'unknown', lastCheckTime: null,
-      nowPlaying: null, metadataAvailable: false, locationAccuracy: 'unknown', source: 'Tudo Rádio Dials',
+      nowPlaying: null, metadataAvailable: false, locationAccuracy: isAnatel ? 'station' : 'unknown', source: isAnatel ? 'Anatel · radiodifusão' : sourceLabel,
       dialsId: dialsStation.id, dialsFrequency: dialsStation.frequency, dialsBand: dialsStation.band,
       dialsSignal: dialsStation.signal, dialsRds: dialsStation.rds,
       dialsClassAndCallsign: dialsStation.classAndCallsign, dialsTechnical: dialsStation.technical,

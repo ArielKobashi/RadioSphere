@@ -246,6 +246,7 @@ class RadioApiClient {
       country,
       countryCode,
       state,
+      stateExact = false,
       tag,
       language,
       limit = 60,
@@ -272,6 +273,7 @@ class RadioApiClient {
     if (country) queryParams.country = country.trim();
     if (countryCode) queryParams.countrycode = countryCode.trim().toUpperCase();
     if (state) queryParams.state = state.trim();
+    if (stateExact) queryParams.stateExact = 'true';
     if (tag) queryParams.tag = tag.trim().toLowerCase();
     if (language) queryParams.language = language.trim().toLowerCase();
 
@@ -391,7 +393,7 @@ class RadioApiClient {
       if (signal?.aborted) throw new DOMException('Busca cancelada.', 'AbortError');
       const results = await this.searchStations({
         countryCode, state: stateName, limit: pageSize, offset: page * pageSize,
-        hasGeoOnly: false, hideBroken: false, preferHttps: false, order: 'name', reverse: false,
+        hasGeoOnly: false, hideBroken: false, preferHttps: false, order: 'name', reverse: false, stateExact: true,
         forceRefresh, signal
       });
       for (const station of results) stations.set(station.id, station);

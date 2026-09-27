@@ -218,6 +218,12 @@ document.addEventListener('DOMContentLoaded', () => {
   let tuRadioBusy = new Set();
   let tuRadioBatchController = null;
   let isDialsResolvingCurrent = false;
+  let anatelParanaStationsPromise = null;
+  let anatelParanaRows = [];
+  let tuRadioParanaDirectoryPromise = null;
+  let tuRadioParanaDirectoryRows = [];
+  let radiosBrasilParanaPromise = null;
+  let radiosBrasilParanaRows = [];
 
   function escape(value) { return Utils.escapeHtml(value ?? ''); }
 
@@ -340,6 +346,195 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  async function loadAnatelParanaStations() {
+    if (!anatelParanaStationsPromise) {
+      anatelParanaStationsPromise = fetch('data/anatel/parana-stations.json', { cache: 'force-cache' }).then(async response => {
+        if (!response.ok) throw new Error(`Catálogo Anatel respondeu HTTP ${response.status}.`);
+        const data = await response.json();
+        if (data?.state !== 'PR' || !Array.isArray(data.stations)) throw new Error('Catálogo Anatel inválido.');
+        anatelParanaRows = data.stations;
+        return data.stations;
+      }).catch(error => { anatelParanaStationsPromise = null; throw error; });
+    }
+    return anatelParanaStationsPromise;
+  }
+
+  async function loadTudoRadioParanaDirectory() {
+    if (!tuRadioParanaDirectoryPromise) {
+      tuRadioParanaDirectoryPromise = fetch('data/tudoradio/parana-directory.json', { cache: 'force-cache' }).then(async response => {
+        if (!response.ok) throw new Error(`Diretório Tudo Rádio respondeu HTTP ${response.status}.`);
+        const data = await response.json();
+        if (!Array.isArray(data?.stations)) throw new Error('Diretório Tudo Rádio inválido.');
+        searchManager.mergeCatalog(data.stations.map(station => tuRadioCatalog.toUnverifiedStation(toTudoRadioDirectoryRecord(station))));
+        return data.stations;
+      }).catch(error => { tuRadioParanaDirectoryPromise = null; throw error; });
+    }
+    return tuRadioParanaDirectoryPromise;
+  }
+
+  async function loadRadiosBrasilParana() {
+    if (!radiosBrasilParanaPromise) {
+      radiosBrasilParanaPromise = loadTudoRadioParanaDirectory().catch(() => []).then(() => fetch('data/radios-brasil/parana-terrestrial.json', { cache: 'force-cache' })).then(async response => {
+        if (!response.ok) throw new Error(`Base Radios Brasil respondeu HTTP ${response.status}.`);
+        const data = await response.json();
+        if (!Array.isArray(data?.stations)) throw new Error('Base Radios Brasil inválida.');
+        radiosBrasilParanaRows = data.stations;
+        searchManager.mergeCatalog(data.stations.map(station => tuRadioCatalog.toUnverifiedStation(toRadiosBrasilRecord(station))));
+        return data.stations;
+      }).catch(error => { radiosBrasilParanaPromise = null; throw error; });
+    }
+    return radiosBrasilParanaPromise;
+  }
+
+  function toTudoRadioDirectoryRecord(station) {
+    const playerUrl = station.detailsUrl || `https://tudoradio.com/player/radio/${encodeURIComponent(station.id)}`;
+    return {
+      ...station, id: `TR-PR-${station.id}`, source: 'Tudo Rádio', state: 'PR', stateName: 'Paraná',
+      transmitterCity: station.transmitterCity || station.city, receptionCity: station.city,
+      classAndCallsign: '', signal: station.categories?.join(' · ') || 'Diretório de rádios',
+      technical: {}, streamUrl: station.streamUrl || null, streamProvider: 'Tudo Rádio', homepage: station.homepage || null,
+      alternateStreamUrls: (station.streamUrls || [station.mobileStreamUrl]).filter(url => url && url !== station.streamUrl),
+      detailsUrl: playerUrl, listenPageUrl: playerUrl, cityPageUrl: station.sourcePage || 'https://tudoradio.com/radios/estado/PR'
+    };
+  }
+
+  function toRadiosBrasilRecord(station) {
+    const city = normalizePlace(station.city);
+    const match = tuRadioParanaDirectoryRows.find(item => normalizePlace(item.city) === city &&
+      String(item.band || '').toUpperCase() === station.band && Number(item.frequency) === Number(station.frequency));
+    const streamUrls = match?.streamUrls || [match?.streamUrl, match?.mobileStreamUrl].filter(Boolean);
+    return {
+      ...station, id: station.id, source: 'Radios Brasil', state: 'PR', stateName: 'Paraná',
+      transmitterCity: station.city, receptionCity: station.city,
+      classAndCallsign: '', signal: 'AM/FM · cadastro terrestre', technical: {},
+      streamUrl: streamUrls[0] || null, streamProvider: match ? 'Tudo Rádio' : 'Radios Brasil', alternateStreamUrls: streamUrls.slice(1),
+      homepage: match?.homepage || null,
+      detailsUrl: match?.detailsUrl || station.sourceUrl,
+      listenPageUrl: match?.detailsUrl || station.sourceUrl,
+      cityPageUrl: station.sourceUrl, radiosBrasilSourceUrl: station.sourceUrl,
+      matchingTudoRadioId: match?.id || null
+    };
+  }
+
+  function mergeRadiosBrasilRecords(city, records) {
+    const combined = [...records];
+    const cityKey = normalizePlace(city);
+    for (const raw of radiosBrasilParanaRows) {
+      if (normalizePlace(raw.city) !== cityKey) continue;
+      const imported = toRadiosBrasilRecord(raw);
+      const sameFrequency = combined.findIndex(item =>
+        normalizePlace(item.transmitterCity || item.receptionCity) === cityKey &&
+        String(item.band || '').toUpperCase() === imported.band &&
+        Number(item.frequency) === Number(imported.frequency));
+      if (sameFrequency < 0) {
+        if (!combined.some(item => item.id === imported.id)) combined.push(imported);
+        continue;
+      }
+      const prior = combined[sameFrequency];
+      combined[sameFrequency] = {
+        ...prior,
+        streamUrl: prior.streamUrl || imported.streamUrl,
+        streamProvider: prior.streamUrl ? prior.streamProvider : imported.streamProvider,
+        alternateStreamUrls: [...new Set([...(prior.alternateStreamUrls || []), ...(imported.alternateStreamUrls || []),
+          ...(prior.streamUrl && imported.streamUrl && prior.streamUrl !== imported.streamUrl ? [imported.streamUrl] : [])])],
+        homepage: prior.homepage || imported.homepage,
+        listenPageUrl: prior.listenPageUrl || imported.listenPageUrl,
+        radiosBrasilName: imported.name,
+        radiosBrasilSourceUrl: imported.radiosBrasilSourceUrl,
+        alternateNames: [...new Set([...(prior.alternateNames || []), imported.name].filter(name => name && name !== prior.name))]
+      };
+    }
+    return combined;
+  }
+
+  function getParanaTerrestrialCount(city) {
+    const cityKey = normalizePlace(city);
+    const signatures = new Set();
+    const add = (row, rowCity, band, frequency) => {
+      if (normalizePlace(rowCity) !== cityKey || !band || !Number.isFinite(Number(frequency))) return;
+      signatures.add(`${String(band).toUpperCase()}|${Number(frequency)}`);
+    };
+    tuRadioParanaDirectoryRows.forEach(row => add(row, row.city, row.band, row.frequency));
+    radiosBrasilParanaRows.forEach(row => add(row, row.city, row.band, row.frequency));
+    anatelParanaRows.forEach(row => add(row, row.city, row.band, row.frequency));
+    return signatures.size;
+  }
+
+  function mergeTudoRadioDirectoryRecords(city, records) {
+    const combined = [...records];
+    const cityKey = normalizePlace(city);
+    for (const raw of tuRadioParanaDirectoryRows) {
+      if (normalizePlace(raw.city) !== cityKey) continue;
+      const directoryRecord = toTudoRadioDirectoryRecord(raw);
+      const sameFrequency = combined.findIndex(item =>
+        normalizePlace(item.transmitterCity || item.receptionCity) === cityKey &&
+        String(item.band || '').toUpperCase() === directoryRecord.band &&
+        Number(item.frequency) === directoryRecord.frequency
+      );
+      if (sameFrequency >= 0) {
+        const prior = combined[sameFrequency];
+        combined[sameFrequency] = {
+          ...prior,
+          streamUrl: prior.streamUrl || directoryRecord.streamUrl,
+          streamProvider: prior.streamUrl ? prior.streamProvider : directoryRecord.streamProvider,
+          alternateStreamUrls: [...new Set([...(prior.alternateStreamUrls || []), ...(directoryRecord.alternateStreamUrls || []), ...(prior.streamUrl && prior.streamUrl !== directoryRecord.streamUrl ? [directoryRecord.streamUrl] : [])])],
+          homepage: prior.homepage || directoryRecord.homepage,
+          listenPageUrl: prior.listenPageUrl || directoryRecord.listenPageUrl,
+          directoryDetailsUrl: directoryRecord.detailsUrl,
+          source: prior.source || directoryRecord.source
+        };
+      } else if (!combined.some(item => item.id === directoryRecord.id)) combined.push(directoryRecord);
+    }
+    return combined;
+  }
+
+  function toAnatelDialsRecord(record) {
+    const hasPower = record.powerErp !== null && record.powerErp !== undefined && record.powerErp !== '' && Number.isFinite(Number(record.powerErp));
+    const power = hasPower ? `${record.powerErp} kW` : '';
+    return {
+      ...record,
+      id: `ANATEL-${record.id}`,
+      source: 'Anatel',
+      transmitterCity: record.city,
+      receptionCity: record.city,
+      signal: power ? `ERP ${power}` : 'Canal licenciado',
+      classAndCallsign: [record.class, record.callsign].filter(Boolean).join(' · '),
+      technical: power ? { potenciaERP: power } : {},
+      streamUrl: record.streamUrl || null,
+      streamProvider: record.streamProvider || null,
+      alternateStreamUrls: record.alternateStreamUrls || [],
+      homepage: record.homepage || null,
+      listenPageUrl: record.listenPageUrl || null,
+      cityPageUrl: null,
+      lat: record.latitude,
+      lon: record.longitude
+    };
+  }
+
+  function addAnatelParanaPins(records) {
+    const stations = records.map(toAnatelDialsRecord).map(record => ({
+      ...tuRadioCatalog.toUnverifiedStation(record),
+      lat: record.latitude,
+      lon: record.longitude,
+      hasValidCoords: true,
+      locationAccuracy: 'station',
+      isAnatelStation: true
+    }));
+    stations.forEach(station => {
+      priorityStationIds.add(station.id);
+      rememberMapStation(station);
+    });
+    searchManager.mergeCatalog(stations);
+    refreshGlobeStations();
+  }
+
+  async function getAnatelStationsForCity(city) {
+    if (city?.state !== 'PR') return [];
+    const name = normalizePlace(city.name || city.slug);
+    const records = await loadAnatelParanaStations();
+    return records.filter(record => normalizePlace(record.city) === name).map(toAnatelDialsRecord);
+  }
+
   function addBundledToledoPins(stations) {
     const latitude = -24.7246;
     const longitude = -53.7412;
@@ -428,6 +623,46 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const record of await loadBundledToledoStations({ state: 'PR', name: 'Toledo' })) {
       addDialsRecordToCity(record.transmitterCity || 'Toledo', record);
     }
+    for (const record of await loadAnatelParanaStations().catch(error => {
+      console.warn('[App] Catálogo Anatel Paraná indisponível:', error.message);
+      return [];
+    })) addDialsRecordToCity(record.city, toAnatelDialsRecord(record));
+    tuRadioParanaDirectoryRows = await loadTudoRadioParanaDirectory().catch(error => {
+      console.warn('[App] Diretório Tudo Rádio Paraná indisponível:', error.message);
+      return [];
+    });
+    for (const raw of tuRadioParanaDirectoryRows) {
+      const record = toTudoRadioDirectoryRecord(raw);
+      const cityName = cityLookup.get(normalizePlace(raw.city));
+      if (!cityName) continue;
+      const rows = dialsIndex.get(cityName);
+      const matchingFrequency = rows.findIndex(item => String(item.band || '').toUpperCase() === record.band && Number(item.frequency) === record.frequency);
+      if (matchingFrequency >= 0) {
+        const existing = rows[matchingFrequency];
+        rows[matchingFrequency] = { ...existing, streamUrl: existing.streamUrl || record.streamUrl,
+          streamProvider: existing.streamUrl ? existing.streamProvider : record.streamProvider,
+          homepage: existing.homepage || record.homepage, directoryDetailsUrl: record.detailsUrl };
+      } else addDialsRecordToCity(raw.city, record);
+    }
+    radiosBrasilParanaRows = await loadRadiosBrasilParana().catch(error => {
+      console.warn('[App] Base Radios Brasil Paraná indisponível:', error.message);
+      return [];
+    });
+    for (const raw of radiosBrasilParanaRows) {
+      const record = toRadiosBrasilRecord(raw);
+      const cityName = cityLookup.get(normalizePlace(raw.city));
+      if (!cityName) continue;
+      const rows = dialsIndex.get(cityName);
+      const matchingFrequency = rows.findIndex(item => String(item.band || '').toUpperCase() === record.band && Number(item.frequency) === Number(record.frequency));
+      if (matchingFrequency >= 0) {
+        const existing = rows[matchingFrequency];
+        rows[matchingFrequency] = { ...existing, streamUrl: existing.streamUrl || record.streamUrl,
+          streamProvider: existing.streamUrl ? existing.streamProvider : record.streamProvider,
+          alternateStreamUrls: [...new Set([...(existing.alternateStreamUrls || []), ...(record.alternateStreamUrls || []),
+            ...(existing.streamUrl && record.streamUrl && existing.streamUrl !== record.streamUrl ? [record.streamUrl] : [])])],
+          radiosBrasilName: record.name, radiosBrasilSourceUrl: record.sourceUrl };
+      } else addDialsRecordToCity(raw.city, record);
+    }
     tuRadioParanaCityIndex = index;
     tuRadioParanaDialsIndex = dialsIndex;
     tuRadioStateStationIndexes.set('PR', index);
@@ -459,6 +694,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     tuRadioStateStationIndexes.set(code, index);
     tuRadioMunicipalityCounts = new Map([...index].map(([name, rows]) => [name, rows.length]));
+    if (code === 'PR') {
+      const anatelStations = await loadAnatelParanaStations().catch(() => []);
+      anatelStations.forEach(station => {
+        const cityName = cityLookup.get(normalizePlace(station.city));
+        if (cityName) tuRadioMunicipalityCounts.set(cityName, (tuRadioMunicipalityCounts.get(cityName) || 0) + 1);
+      });
+      tuRadioParanaDirectoryRows = await loadTudoRadioParanaDirectory().catch(() => []);
+      tuRadioParanaDirectoryRows.forEach(station => {
+        const cityName = cityLookup.get(normalizePlace(station.city));
+        if (cityName) tuRadioMunicipalityCounts.set(cityName, (tuRadioMunicipalityCounts.get(cityName) || 0) + 1);
+      });
+      await loadRadiosBrasilParana().catch(() => []);
+      municipalities.forEach(city => {
+        const catalogCount = getParanaTerrestrialCount(city.name);
+        if (catalogCount) tuRadioMunicipalityCounts.set(city.name, (index.get(city.name)?.length || 0) + catalogCount);
+      });
+    }
     searchManager.mergeCatalog([...index.values()].flat());
     refreshGlobeStations();
     onProgress(`Radio Browser: ${[...index.values()].reduce((sum, rows) => sum + rows.length, 0).toLocaleString('pt-BR')} rádios de ${stateName} associadas aos municípios.`);
@@ -505,6 +757,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const dialsPins = center && Number.isFinite(Number(center.lat)) && Number.isFinite(Number(center.lon))
       ? dialsStations.map((record, index) => {
         const mapStation = tuRadioCatalog.toUnverifiedStation(record);
+        const hasAnatelCoordinates = record.source === 'Anatel' && Number.isFinite(Number(record.latitude)) && Number.isFinite(Number(record.longitude));
+        if (hasAnatelCoordinates) {
+          return {
+            ...mapStation,
+            lat: Number(record.latitude), lon: Number(record.longitude), hasValidCoords: true,
+            locationAccuracy: 'station', isAnatelStation: true
+          };
+        }
         const distance = Math.min(12000, 3500 + 1800 * Math.sqrt(index + 1));
         const angle = index * 2.399963229728653;
         const latitude = Number(center.lat);
@@ -716,7 +976,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <label>Idioma<select name="language">${filterOptions('language', station => station.language)}</select></label>
           <label>Gênero<select name="genre">${filterOptions('genre', station => station.tags || [])}</select></label>
           <label>Codec<select name="codec">${filterOptions('codec', station => station.codec)}</select></label>
-          <label>Banco de dados<select name="database"><option value="">Todos os bancos</option><option value="Radio Browser" ${activeStationFilters.database === 'Radio Browser' ? 'selected' : ''}>Radio Browser · mundial</option><option value="Tudo Rádio Dials" ${activeStationFilters.database === 'Tudo Rádio Dials' ? 'selected' : ''}>Tudo Rádio Dials · Brasil</option><option value="IPRD" ${activeStationFilters.database === 'IPRD' ? 'selected' : ''}>IPRD · rádios públicas</option></select></label>
+          <label>Banco de dados<select name="database"><option value="">Todos os bancos</option><option value="Radio Browser" ${activeStationFilters.database === 'Radio Browser' ? 'selected' : ''}>Radio Browser · mundial</option><option value="Radios Brasil" ${activeStationFilters.database === 'Radios Brasil' ? 'selected' : ''}>Radios Brasil · AM/FM do Paraná</option><option value="Tudo Rádio" ${activeStationFilters.database === 'Tudo Rádio' ? 'selected' : ''}>Tudo Rádio · Paraná</option><option value="Tudo Rádio Dials" ${activeStationFilters.database === 'Tudo Rádio Dials' ? 'selected' : ''}>Tudo Rádio Dials · Brasil</option><option value="Anatel" ${activeStationFilters.database === 'Anatel' ? 'selected' : ''}>Anatel · Paraná</option><option value="IPRD" ${activeStationFilters.database === 'IPRD' ? 'selected' : ''}>IPRD · rádios públicas</option></select></label>
           <label>Bitrate mínimo<input name="minBitrate" type="number" min="0" max="1000" step="16" value="${escape(activeStationFilters.minBitrate)}" placeholder="Qualquer bitrate"></label>
           <div class="filter-actions"><button class="utility-primary-btn" type="submit">Aplicar filtros</button><button class="utility-text-btn" id="clearStationFilters" type="button">Limpar</button></div>
         </form>
@@ -784,7 +1044,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (utilityMode === 'dials') renderUtilityPanel('dials');
         });
       }
-      utilityPanelTitle.textContent = 'Catálogo Dials Brasil';
+      utilityPanelTitle.textContent = 'Emissoras Brasil · AM/FM terrestre';
       btnOpenLibrary?.classList.remove('active');
       const stateOptions = brazilianStates.map(([code, name]) => `<option value="${code}" ${tuRadioSelectedUf === code ? 'selected' : ''}>${escape(name)} (${code})</option>`).join('');
       const cityOptions = tuRadioCities.map(city => {
@@ -798,18 +1058,19 @@ document.addEventListener('DOMContentLoaded', () => {
         const busy = tuRadioBusy.has(station.id);
         const status = busy ? 'Validando URL de áudio…' : result
           ? result.streamValid ? `Stream validado · ${escape(result.streamSource)} · ${(result.station.streamCandidates || []).length.toLocaleString('pt-BR')} links verificados · HTTP ${escape(result.station.streamValidation?.status || 'OK')} · ${escape(result.station.streamValidation?.contentType || 'áudio')}`
-            : `Cadastro Dials confirmado · sem áudio validado${result.directCheck?.reason ? ` · ${escape(result.directCheck.reason)}` : ''}`
-          : 'Cadastro Dials carregado · áudio ainda não testado';
-        const matchNote = result?.streamValid && result.streamSource === 'Radio Browser' ? 'Encontrado após a validação do stream Dials.' : '';
+            : `${station.source === 'Anatel' ? 'Emissora licenciada na base oficial' : station.source === 'Tudo Rádio' ? 'Cadastro do diretório Tudo Rádio' : station.source === 'Radios Brasil' ? 'Emissora terrestre AM/FM do Radios Brasil' : 'Cadastro Dials confirmado'} · sem áudio validado${result.directCheck?.reason ? ` · ${escape(result.directCheck.reason)}` : ''}`
+          : station.source === 'Anatel' ? 'Emissora licenciada na base oficial · áudio ainda não testado' : station.source === 'Tudo Rádio' ? 'Stream informado pelo diretório Tudo Rádio · áudio ainda não testado' : station.source === 'Radios Brasil' ? 'Emissora terrestre AM/FM · áudio ainda não testado' : 'Cadastro Dials carregado · áudio ainda não testado';
+        const matchNote = result?.streamValid && result.streamSource === 'Radio Browser' ? `Encontrado no Radio Browser para ${station.source || 'o cadastro'}.` : '';
         return `<article class="library-station-card dials-radio-card">
           <div class="library-station-copy"><strong>${escape(station.name)} · ${escape(station.frequency)} ${escape(station.band)}</strong>
             <span>${escape([station.transmitterCity || station.receptionCity, station.state, station.signal, station.classAndCallsign].filter(Boolean).join(' · '))}</span>
+            ${station.radiosBrasilName && station.radiosBrasilName !== station.name ? `<span>Também listado como ${escape(station.radiosBrasilName)} no Radios Brasil</span>` : ''}
             <span class="dials-validation-status">${status}${matchNote ? ` ${escape(matchNote)}` : ''}</span>
           </div>
           <div class="dials-station-actions">
             ${result?.streamValid ? `<button class="library-play-btn" type="button" data-dials-play="${index}" aria-label="Tocar ${escape(station.name)}">▶</button>${(result.station.streamCandidates || []).slice(1).map((candidate, candidateIndex) => `<button class="utility-text-btn" type="button" data-dials-stream="${index}" data-stream-index="${candidateIndex + 1}" title="${escape(candidate.url)}">LINK ${candidateIndex + 2}</button>`).join('')}` : ''}
             <button class="utility-text-btn" type="button" data-dials-validate="${index}" ${busy || tuRadioBatchController ? 'disabled' : ''}>${busy ? 'TESTANDO…' : result?.streamValid ? 'TESTAR DE NOVO' : 'VALIDAR E BUSCAR STREAM'}</button>
-            <a class="utility-text-btn" href="${escape(station.listenPageUrl)}" target="_blank" rel="noopener noreferrer">OUVIR NO TUDO RÁDIO</a>
+            ${station.listenPageUrl ? `<a class="utility-text-btn" href="${escape(station.listenPageUrl)}" target="_blank" rel="noopener noreferrer">OUVIR NO TUDO RÁDIO</a>` : ''}
           </div>
         </article>`;
       }).join('');
@@ -819,7 +1080,7 @@ document.addEventListener('DOMContentLoaded', () => {
       </article>`).join('');
       const stateLabel = brazilianStates.find(([code]) => code === tuRadioSelectedUf)?.[1] || tuRadioSelectedUf;
       utilityPanelContent.innerHTML = `
-        <p class="utility-intro">Use o catálogo Dials como validação de emissora, frequência e local. Depois o app verifica o stream direto; se falhar, procura uma transmissão correspondente no Radio Browser.</p>
+        <p class="utility-intro">O catálogo combina os cadastros AM/FM do Radios Brasil, as emissoras licenciadas pela Anatel e os links de transmissão publicados nas seis páginas do Tudo Rádio. Entradas sem frequência terrestre são excluídas.</p>
         <div class="filter-actions"><button class="utility-primary-btn" id="loadDialsNational" type="button" ${tuRadioNationalController ? 'disabled' : ''}>${tuRadioNationalCachePresent ? 'Abrir catálogo nacional salvo' : tuRadioNationalStations.length ? 'Ver catálogo carregado' : 'Importar catálogo de todas as cidades'}</button>${tuRadioNationalController ? '<button class="utility-text-btn" id="cancelDialsNational" type="button">Cancelar importação</button>' : ''}</div>
         ${tuRadioNationalStations.length ? `<p class="utility-note">${tuRadioNationalStations.length.toLocaleString('pt-BR')} emissoras carregadas em ${tuRadioNationalCities.length.toLocaleString('pt-BR')} cidades. ${tuRadioNationalCachePresent ? 'O catálogo fica salvo neste navegador e abre sem baixar tudo de novo.' : 'O armazenamento persistente não confirmou o salvamento; os dados ficam disponíveis nesta sessão.'} Os pins representam o centro aproximado de cada cidade; toque em um pin para ver as rádios Dials locais.</p>` : ''}
         <p class="filter-count" id="dialsBatchProgress" aria-live="polite">${escape(tuRadioProgress)}</p>
@@ -829,13 +1090,14 @@ document.addEventListener('DOMContentLoaded', () => {
           <button class="utility-primary-btn" id="loadDialsCity" type="button" ${tuRadioSelectedCityPath ? '' : 'disabled'}>Carregar esta cidade</button>
         </div>
         <div class="filter-actions"><button class="utility-primary-btn" id="scanStateStations" type="button">${tuRadioStateStationIndexes.has(tuRadioSelectedUf) ? `Atualizar rádios de ${tuRadioCities.length} municípios de ${tuRadioSelectedUf}` : `Pesquisar rádios nos ${tuRadioCities.length} municípios de ${tuRadioSelectedUf}`}</button></div>
-        <p class="utility-note">O município é a lista oficial do IBGE. A busca cruza rádios e coordenadas do Radio Browser; importar o catálogo Dials nacional também acrescenta frequências e estações cujo transmissor fica em outra cidade.</p>
+        <p class="utility-note">No Paraná, AM e FM terrestres têm prioridade. As listas incluem as frequências confirmadas pelo Radios Brasil, a base da Anatel e o Tudo Rádio; ao validar a estação, o app testa os links e procura alternativas no Radio Browser.</p>
         ${tuRadioProgress ? `<p class="filter-count" id="dialsLocalProgress" aria-live="polite">${escape(tuRadioProgress)}</p>` : ''}
-        ${tuRadioCityStations.length ? `<p class="filter-count">${tuRadioCityStations.length.toLocaleString('pt-BR')} emissoras listadas em ${escape(tuRadioCityStations[0]?.receptionCity || stateLabel)} · primeiro o cadastro Dials, depois teste do áudio</p>
+        ${tuRadioCityStations.length ? `<p class="filter-count">${tuRadioCityStations.length.toLocaleString('pt-BR')} registros de emissoras em ${escape(tuRadioCityStations[0]?.receptionCity || stateLabel)} · Radios Brasil, Anatel, Dials e Tudo Rádio</p>
           <div class="filter-actions"><button class="utility-primary-btn" id="validateAllDials" type="button" ${tuRadioBatchController ? 'disabled' : ''}>Validar e buscar streams de todas</button>${tuRadioBatchController ? '<button class="utility-text-btn" id="cancelDialsBatch" type="button">Cancelar</button>' : ''}</div>
           <div class="library-station-list">${cityStationRows}</div>` : tuRadioBrowserCityStations.length ? '<p class="utility-note">Não há cadastro Dials encontrado nesta cidade; abaixo estão as emissoras do Radio Browser.</p>' : '<p class="utility-note">Selecione uma cidade para consultar os bancos. O catálogo Dials traz frequências e cadastros; o Radio Browser fornece streams e coordenadas quando disponíveis.</p>'}
         ${tuRadioBrowserCityStations.length ? `<p class="filter-count">${tuRadioBrowserCityStations.length.toLocaleString('pt-BR')} streams encontrados no Radio Browser para esta cidade</p><div class="library-station-list">${radioBrowserCityRows}</div>` : ''}
-        <a class="utility-text-btn" href="https://tudoradio.com/dials/estado/${tuRadioSelectedUf}" target="_blank" rel="noopener noreferrer">ABRIR PÁGINA ORIGINAL DO ESTADO</a>
+        <a class="utility-text-btn" href="https://tudoradio.com/dials/estado/${tuRadioSelectedUf}" target="_blank" rel="noopener noreferrer">ABRIR TUDO RÁDIO DIALS</a>
+        ${tuRadioSelectedUf === 'PR' ? '<a class="utility-text-btn" href="https://tudoradio.com/radios/estado/PR" target="_blank" rel="noopener noreferrer">ABRIR DIRETÓRIO TUDO RÁDIO · 6 PÁGINAS</a>' : ''}
         <button class="utility-text-btn" id="backToDialsFilters" type="button">Voltar aos filtros</button>`;
 
       const loadCities = async uf => {
@@ -850,6 +1112,29 @@ document.addEventListener('DOMContentLoaded', () => {
         renderUtilityPanel('dials');
         try {
           tuRadioCities = await tuRadioCatalog.getMunicipalities(uf);
+          if (uf === 'PR') {
+            const anatelStations = await loadAnatelParanaStations().catch(() => []);
+            anatelStations.forEach(station => {
+              const cityName = tuRadioCities.find(city => normalizePlace(city.name) === normalizePlace(station.city))?.name;
+              if (cityName) tuRadioMunicipalityCounts.set(cityName, (tuRadioMunicipalityCounts.get(cityName) || 0) + 1);
+            });
+            tuRadioParanaDirectoryRows = await loadTudoRadioParanaDirectory().catch(error => {
+              console.warn('[App] Diretório Tudo Rádio Paraná indisponível:', error.message);
+              return [];
+            });
+            tuRadioParanaDirectoryRows.forEach(station => {
+              const cityName = tuRadioCities.find(city => normalizePlace(city.name) === normalizePlace(station.city))?.name;
+              if (cityName) tuRadioMunicipalityCounts.set(cityName, (tuRadioMunicipalityCounts.get(cityName) || 0) + 1);
+            });
+            await loadRadiosBrasilParana().catch(error => {
+              console.warn('[App] Base AM/FM do Radios Brasil indisponível:', error.message);
+              return [];
+            });
+            tuRadioCities.forEach(city => {
+              const count = getParanaTerrestrialCount(city.name);
+              if (count) tuRadioMunicipalityCounts.set(city.name, count);
+            });
+          }
           const knownCity = uf === 'PR' ? tuRadioCities.find(city => normalizePlace(city.name || city.slug) === 'cascavel') : null;
           tuRadioSelectedCityPath = knownCity ? knownCity.ibgeCode || knownCity.path : '';
           tuRadioProgress = uf === 'PR'
@@ -860,17 +1145,31 @@ document.addEventListener('DOMContentLoaded', () => {
         renderUtilityPanel('dials');
       };
       document.getElementById('scanStateStations')?.addEventListener('click', async () => {
-        tuRadioProgress = `Pesquisando no banco Radio Browser e associando as rádios aos municípios de ${tuRadioSelectedUf}…`;
+        tuRadioProgress = tuRadioSelectedUf === 'PR'
+          ? 'Pesquisando no Radio Browser e lendo os registros Dials de todas as cidades do Paraná…'
+          : `Pesquisando no banco Radio Browser e associando as rádios aos municípios de ${tuRadioSelectedUf}…`;
         renderUtilityPanel('dials');
         try {
-          const index = await searchStateStations(tuRadioSelectedUf, { forceRefresh: true, onProgress: message => {
-            tuRadioProgress = message;
-            const node = document.getElementById('dialsBatchProgress');
-            if (node) node.textContent = message;
-          } });
+          const index = tuRadioSelectedUf === 'PR'
+            ? await searchParanaStations({ forceRefresh: true, onProgress: message => {
+              tuRadioProgress = message;
+              const node = document.getElementById('dialsBatchProgress');
+              if (node) node.textContent = message;
+            } })
+            : await searchStateStations(tuRadioSelectedUf, { forceRefresh: true, onProgress: message => {
+              tuRadioProgress = message;
+              const node = document.getElementById('dialsBatchProgress');
+              if (node) node.textContent = message;
+            } });
           const radioBrowserTotal = [...index.values()].reduce((sum, rows) => sum + rows.length, 0);
           const covered = [...index.keys()].filter(name => index.get(name).length).length;
-          tuRadioProgress = `Busca concluída: ${radioBrowserTotal.toLocaleString('pt-BR')} rádios do Radio Browser associadas a ${covered} dos ${tuRadioCities.length} municípios de ${tuRadioSelectedUf}. Para complementar com frequências e transmissores locais, importe o catálogo Dials nacional.`;
+          const indexedDialsRows = tuRadioSelectedUf === 'PR' ? [...(tuRadioParanaDialsIndex?.values() || [])].flat() : [];
+          const anatelTotal = indexedDialsRows.filter(record => record.source === 'Anatel').length;
+          const directoryTotal = tuRadioSelectedUf === 'PR' ? tuRadioParanaDirectoryRows.length : 0;
+          const dialsTotal = indexedDialsRows.filter(record => record.source !== 'Anatel' && record.source !== 'Tudo Rádio').length;
+          const coveredWithDials = tuRadioSelectedUf === 'PR'
+            ? [...index.keys()].filter(name => index.get(name).length || tuRadioParanaDialsIndex?.get(name)?.length).length : covered;
+          tuRadioProgress = `Busca concluída: ${radioBrowserTotal.toLocaleString('pt-BR')} rádios Radio Browser${dialsTotal ? `, ${dialsTotal.toLocaleString('pt-BR')} registros Dials` : ''}${anatelTotal ? ` e ${anatelTotal.toLocaleString('pt-BR')} emissoras licenciadas pela Anatel` : ''}${directoryTotal ? `; as seis páginas do Tudo Rádio acrescentam links e até ${directoryTotal.toLocaleString('pt-BR')} cadastros` : ''}, distribuídos por ${coveredWithDials} dos ${tuRadioCities.length} municípios de ${tuRadioSelectedUf}.`;
         } catch (error) { tuRadioProgress = error.message; }
         renderUtilityPanel('dials');
       });
@@ -901,7 +1200,11 @@ document.addEventListener('DOMContentLoaded', () => {
             item.state === city.state && [item.receptionCity, item.transmitterCity].some(value => normalizePlace(value) === normalizePlace(city.name || city.slug)));
           const indexedCityStations = tuRadioSelectedUf === 'PR' ? (tuRadioParanaDialsIndex?.get(city.name) || []) : [];
           const bundledCityStations = await loadBundledToledoStations(city);
-          tuRadioCityStations = [...new Map([...nationalCityStations, ...indexedCityStations, ...bundledCityStations]
+          const anatelCityStations = await getAnatelStationsForCity(city).catch(error => {
+            console.warn(`[App] Não consegui carregar emissoras Anatel de ${city.name}:`, error.message);
+            return [];
+          });
+          tuRadioCityStations = [...new Map([...nationalCityStations, ...indexedCityStations, ...bundledCityStations, ...anatelCityStations]
             .map(item => [`${item.source || 'Dials'}:${item.id}`, item])).values()];
           const dialsPath = city.dialsPath || (city.path?.startsWith('/dials/') ? city.path : '');
           if (dialsPath) {
@@ -910,6 +1213,12 @@ document.addEventListener('DOMContentLoaded', () => {
               tuRadioCityStations = [...new Map([...tuRadioCityStations, ...(result.stations || [])]
                 .map(item => [`${item.source || 'Dials'}:${item.id}`, item])).values()];
             } catch (error) { console.warn(`[App] Dials indisponível para ${city.name}:`, error.message); }
+          }
+          if (city.state === 'PR') {
+            tuRadioParanaDirectoryRows = await loadTudoRadioParanaDirectory().catch(() => tuRadioParanaDirectoryRows);
+            radiosBrasilParanaRows = await loadRadiosBrasilParana().catch(() => radiosBrasilParanaRows);
+            tuRadioCityStations = mergeTudoRadioDirectoryRecords(city.name, tuRadioCityStations);
+            tuRadioCityStations = mergeRadiosBrasilRecords(city.name, tuRadioCityStations);
           }
           tuRadioResults = new Map();
           await showCityStationsOnMap(city, tuRadioBrowserCityStations, tuRadioCityStations);
@@ -1893,7 +2202,11 @@ document.addEventListener('DOMContentLoaded', () => {
           const indexedDialsCity = city.state === 'PR'
             ? [...(tuRadioParanaDialsIndex || [])].find(([name]) => normalizePlace(name) === normalizePlace(cityName)) : null;
           const bundledCityStations = await loadBundledToledoStations(city);
-          tuRadioCityStations = [...new Map([...nationalCityStations, ...(indexedDialsCity?.[1] || []), ...bundledCityStations]
+          const anatelCityStations = await getAnatelStationsForCity(city).catch(error => {
+            console.warn(`[App] Não consegui carregar emissoras Anatel de ${cityName}:`, error.message);
+            return [];
+          });
+          tuRadioCityStations = [...new Map([...nationalCityStations, ...(indexedDialsCity?.[1] || []), ...bundledCityStations, ...anatelCityStations]
             .map(item => [`${item.source || 'Dials'}:${item.id}`, item])).values()];
           if (dialsPath) {
             try {
@@ -1901,6 +2214,12 @@ document.addEventListener('DOMContentLoaded', () => {
               tuRadioCityStations = [...new Map([...tuRadioCityStations, ...(result.stations || [])]
                 .map(item => [`${item.source || 'Dials'}:${item.id}`, item])).values()];
             } catch (error) { console.warn(`[App] Dials indisponível para ${cityName}:`, error.message); }
+          }
+          if (city.state === 'PR') {
+            tuRadioParanaDirectoryRows = await loadTudoRadioParanaDirectory().catch(() => tuRadioParanaDirectoryRows);
+            radiosBrasilParanaRows = await loadRadiosBrasilParana().catch(() => radiosBrasilParanaRows);
+            tuRadioCityStations = mergeTudoRadioDirectoryRecords(cityName, tuRadioCityStations);
+            tuRadioCityStations = mergeRadiosBrasilRecords(cityName, tuRadioCityStations);
           }
           tuRadioResults = new Map();
           await showCityStationsOnMap(city, tuRadioBrowserCityStations, tuRadioCityStations, { ...station, id: station.id });
@@ -1967,6 +2286,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Keep Toledo's transmitter records in the map catalog so its pins appear
   // as soon as the Paraná viewport is visible, without requiring a city scan.
   loadBundledToledoStations({ state: 'PR', name: 'Toledo' }).then(addBundledToledoPins);
+  loadAnatelParanaStations().then(addAnatelParanaPins).catch(error => console.warn('[App] Não foi possível preparar pins licenciados do Paraná:', error.message));
 
   // Reuse the complete Brazilian Dials import and its city pins after reload.
   // This only reads IndexedDB; it does not contact Tudo Rádio or geocode again.
