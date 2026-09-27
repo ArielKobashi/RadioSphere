@@ -19,6 +19,7 @@ class RadioApiClient {
     this.cache = new Map();
     this.cacheTtlMs = window.WRG_CONFIG?.radioBrowser.cacheTtlMs || 5 * 60 * 1000;
     this.requestTimeoutMs = window.WRG_CONFIG?.radioBrowser.requestTimeoutMs || 7000;
+    this.lastApiFailureAt = 0;
     this.geocodeQueue = Promise.resolve();
     this.lastGeocodeAt = 0;
     this.iprdCatalogPromise = null;
@@ -126,6 +127,7 @@ class RadioApiClient {
 
         if (response.ok) {
           this.activeMirror = mirror; // Define o mirror de sucesso como prioritário
+          this.lastApiFailureAt = 0;
 
           // Salva no cache
           this.cache.set(cacheKey, {
@@ -143,6 +145,7 @@ class RadioApiClient {
 
     if (externalSignal?.aborted) throw new Error('Requisição cancelada.');
     if (cached && Date.now() - cached.timestamp < 24 * 60 * 60 * 1000) return cached.data;
+    this.lastApiFailureAt = Date.now();
     throw new Error('Todos os servidores da Radio Browser API estão inacessíveis no momento.');
   }
 
@@ -470,13 +473,11 @@ class RadioApiClient {
 
   _dedupeCatalog(stations) {
     const unique = new Map();
-    const streams = new Set();
     (stations || []).forEach(station => {
       if (!station?.id || !station.name) return;
-      const streamKey = station.streamUrl ? String(station.streamUrl).trim().replace(/\/$/, '').toLowerCase() : '';
-      if (unique.has(station.id) || (streamKey && streams.has(streamKey))) return;
+      // Shared audio streams are still distinct stations with their own locations.
+      if (unique.has(station.id)) return;
       unique.set(station.id, station);
-      if (streamKey) streams.add(streamKey);
     });
     return unique;
   }
@@ -572,9 +573,6 @@ class RadioApiClient {
     const pageCount = Math.ceil(total / safePageSize);
     await this._pruneCatalogPages(pageCount, now - 90 * 24 * 60 * 60 * 1000, safePageSize);
     let failed = false;
-    const streamOwner = new Map(Array.from(this.catalogStations.values())
-      .map(station => [station.streamUrl && station.streamUrl.trim().replace(/\/$/, '').toLowerCase(), station.id])
-      .filter(([url]) => Boolean(url)));
     for (let start = 0; start < pageCount; start += 2) {
       if (signal.aborted) break;
       if (start > 0) {
@@ -588,43 +586,30 @@ class RadioApiClient {
       }
       const offsets = [start, start + 1].filter(index => index < pageCount).map(index => index * safePageSize);
       const missing = offsets.filter(offset => !freshPages.has(offset));
-      const results = await Promise.allSettled(missing.map(offset => this.searchStations({
-        limit: safePageSize, offset, hasGeoOnly: null, order: 'name', reverse: false,
-        preferHttps: false, hideBroken: false, signal
-      }).then(async stations => {
-        const page = { offset, stations, updatedAt: Date.now() };
-        await this._writeCatalogPage(offset, stations);
-        freshPages.set(offset, page);
-        return page;
-      })));
+      let results = [];
+      for (let attempt = 0; attempt < 3 && missing.length && !signal.aborted; attempt++) {
+        results = await Promise.allSettled(missing.map(offset => this.searchStations({
+          limit: safePageSize, offset, hasGeoOnly: null, order: 'name', reverse: false,
+          preferHttps: false, hideBroken: false, signal
+        }).then(async stations => {
+          const page = { offset, stations, updatedAt: Date.now() };
+          await this._writeCatalogPage(offset, stations);
+          freshPages.set(offset, page);
+          return page;
+        })));
+        if (!results.some(result => result.status === 'rejected') || attempt === 2 || signal.aborted) break;
+        await new Promise(resolve => {
+          const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
+          const timer = setTimeout(finish, 1000 * (2 ** attempt));
+          signal.addEventListener('abort', finish, { once: true });
+        });
+      }
       const shortBeforeReportedEnd = results.some(result => result.status === 'fulfilled' &&
         result.value.stations.length < safePageSize && result.value.offset + result.value.stations.length < total);
       if (results.some(result => result.status === 'rejected') || shortBeforeReportedEnd) failed = true;
       for (const result of results) {
         if (result.status === 'fulfilled') {
-          result.value.stations.forEach(station => {
-            const key = station.streamUrl ? String(station.streamUrl).trim().replace(/\/$/, '').toLowerCase() : '';
-            const previous = this.catalogStations.get(station.id);
-            if (previous) {
-              const previousKey = previous.streamUrl && previous.streamUrl.trim().replace(/\/$/, '').toLowerCase();
-              if (previousKey && streamOwner.get(previousKey) === station.id) streamOwner.delete(previousKey);
-              if (key && streamOwner.has(key) && streamOwner.get(key) !== station.id) {
-                this.catalogDuplicatesRemoved++;
-                this.catalogStations.set(station.id, { ...previous, lastCheckStatus: station.lastCheckStatus, lastCheckTime: station.lastCheckTime });
-                if (previousKey) streamOwner.set(previousKey, station.id);
-                return;
-              }
-              this.catalogStations.set(station.id, station);
-              if (key) streamOwner.set(key, station.id);
-              return;
-            }
-            if (key && streamOwner.has(key)) {
-              this.catalogDuplicatesRemoved++;
-              return;
-            }
-            this.catalogStations.set(station.id, station);
-            if (key) streamOwner.set(key, station.id);
-          });
+          result.value.stations.forEach(station => this.catalogStations.set(station.id, station));
         }
       }
       const received = [...freshPages.values()].reduce((sum, page) => sum + page.stations.length, 0);
@@ -716,6 +701,17 @@ class RadioApiClient {
    */
   async getStationsInBoundingBox(minLat, minLon, maxLat, maxLon, limit = 50, countryCode = '') {
     try {
+      const isInside = station => {
+        const longitudeIsInside = minLon <= maxLon
+          ? station.lon >= minLon && station.lon <= maxLon
+          : station.lon >= minLon || station.lon <= maxLon;
+        return station.hasValidCoords && station.lat >= minLat && station.lat <= maxLat && longitudeIsInside &&
+          (!countryCode || station.countryCode === countryCode.toUpperCase());
+      };
+      const localStations = [...this.catalogStations.values()].filter(isInside);
+      if (localStations.length >= limit || this.catalogStatus.complete || Date.now() - this.lastApiFailureAt < 20000) {
+        return localStations.slice(0, limit);
+      }
       // A Radio Browser não filtra por caixa; examina páginas aleatórias sucessivas
       // para encontrar mais estações na região, em vez de limitar a amostra mundial.
       const pageSize = 1000;
@@ -734,16 +730,8 @@ class RadioApiClient {
       const uniqueStations = new Map(stations.map(station => [station.id, station]));
 
       // Filtra estritamente dentro da Bounding Box WGS84
-      return [...uniqueStations.values()].filter(station => {
-        const longitudeIsInside = minLon <= maxLon
-          ? station.lon >= minLon && station.lon <= maxLon
-          : station.lon >= minLon || station.lon <= maxLon;
-        return (
-          station.lat >= minLat &&
-          station.lat <= maxLat &&
-          longitudeIsInside
-        );
-      }).slice(0, limit);
+      localStations.forEach(station => uniqueStations.set(station.id, station));
+      return [...uniqueStations.values()].filter(isInside).slice(0, limit);
     } catch (err) {
       console.warn('[RadioApi] Falha ao consultar bounding box:', err);
       return [];

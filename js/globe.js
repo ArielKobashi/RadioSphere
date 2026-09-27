@@ -419,19 +419,6 @@ class GlobeManager {
   setStations(stations = []) {
     if (!Array.isArray(stations)) return;
 
-    // Hundreds of city hubs plus nearby radios can exceed mobile GPU limits.
-    // Keep every hub and a recent/priority sample of radio pins on the globe.
-    const renderLimit = window.matchMedia('(max-width: 900px)').matches ? 1000 : 5000;
-    const cityHubs = stations.filter(station => station?.isDialsCityHub);
-    const radioStations = stations.filter(station => station && !station.isDialsCityHub);
-    if (stations.length > renderLimit) {
-      const hubLimit = Math.min(cityHubs.length, Math.floor(renderLimit * 0.6));
-      const radioLimit = Math.max(0, renderLimit - hubLimit);
-      const sample = (items, count) => count >= items.length ? items : count <= 0 ? [] :
-        Array.from({ length: count }, (_, index) => items[Math.floor(index * items.length / count)]);
-      stations = [...sample(radioStations, radioLimit), ...sample(cityHubs, hubLimit)];
-    }
-
     this.markersDataSource.entities.removeAll();
     this.renderedStationsMap.clear();
 

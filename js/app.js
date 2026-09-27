@@ -235,7 +235,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function getFilteredStations() {
     const filters = activeStationFilters;
-    return Array.from(allLoadedStations.values()).filter(station => {
+    // The complete global catalog can be much larger than the small working
+    // set used for UI filters. Union both so imported cached records keep their pins.
+    const stations = new Map(radioApi.catalogStations || []);
+    allLoadedStations.forEach((station, id) => stations.set(id, station));
+    return Array.from(stations.values()).filter(station => {
       const matches = (value, filter) => !filter || String(value || '').toLowerCase().includes(filter.toLowerCase());
       if (filters.country && String(station.countryCode || station.country || '').toLowerCase() !== filters.country.toLowerCase() && String(station.country || '').toLowerCase() !== filters.country.toLowerCase()) return false;
       if (!matches(station.state, filters.state) || !matches(station.language, filters.language)) return false;
