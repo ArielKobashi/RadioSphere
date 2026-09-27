@@ -26,9 +26,10 @@ class AppStateManager {
       currentTrack: {
         title: '',
         artist: '',
+        album: '', artwork: '', releaseDate: '', duration: null, identifier: '', url: '', method: 'none',
         rawTitle: '',
         source: 'none', // 'icy' | 'station_api' | 'provider' | 'none'
-        confidence: 'unavailable', // 'verified' | 'possible' | 'unavailable'
+        confidence: null, // somente score técnico real do provider, se oferecido
         timestamp: 0
       },
       trackHistory: Utils.storage.get('wrg_track_history', []),
@@ -189,6 +190,7 @@ class AppStateManager {
     const recent = history.find(h => 
       h.stationId === current.id && 
       h.title === trackInfo.title && 
+      (h.artist || '') === (trackInfo.artist || '') &&
       (now - h.timestamp < 120000)
     );
 
@@ -202,8 +204,11 @@ class AppStateManager {
       title: trackInfo.title,
       artist: trackInfo.artist || '',
       album: trackInfo.album || '',
+      artwork: trackInfo.artwork || '',
+      releaseDate: trackInfo.releaseDate || '',
+      identifier: trackInfo.identifier || '',
       source: trackInfo.source || 'unknown',
-      confidence: trackInfo.confidence || 'verified',
+      confidence: trackInfo.confidence ?? null,
       timestamp: now
     };
 

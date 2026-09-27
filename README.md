@@ -107,15 +107,9 @@ Para cada rádio Dials, o app primeiro confirma o cadastro/frequência, tenta va
 
 ## 🎵 Identificação de música
 
-O botão **IDENTIFICAR MÚSICA** tenta primeiro ler a faixa que a própria rádio publica em seus metadados ICY/Icecast/AzuraCast, sem chave ou FFmpeg. Se a emissora não publicar a faixa, existe um fallback acústico opcional via `songs/v3/detect` do RapidAPI; esse fallback precisa de chave e FFmpeg para converter 4 segundos do stream para PCM mono 44.1 kHz. A chave nunca fica no JavaScript do navegador.
+O sistema consulta metadados ICY/Icecast/AzuraCast publicados pela estação, pelo backend local, sem API Key ou custo externo. A interface identifica a faixa como informação fornecida pela rádio. Se a estação não publicar metadados, o app informa que a música não foi identificada; não analisa o áudio nem adivinha faixas. Não há reconhecimento acústico nem modo offline.
 
-Para ativar:
-
-1. Execute `node server.js` na pasta do projeto e acesse `http://localhost:8765`; metadata das estações funciona sem conta.
-2. Para ativar também o reconhecimento acústico quando a estação não informa a música, instale FFmpeg e configure `FFMPEG_PATH`.
-3. Obtenha a chave do serviço no [RapidAPI](https://rapidapi.com/apidojo/api/shazam), copie `.env.example` para `.env` e preencha `RAPIDAPI_KEY`.
-
-O app nunca inventa uma faixa: rádios sem metadata só podem ser reconhecidas acusticamente quando a chave e o FFmpeg estiverem configurados. O fallback envia um trecho curto da estação escolhida ao serviço de reconhecimento e depende da disponibilidade e dos limites do RapidAPI.
+Para usar, execute `node server.js` e abra `http://localhost:8765`. O painel da estação consulta o Now Playing automaticamente enquanto a rádio toca; o botão **IDENTIFICAR MÚSICA** permite consultar novamente. Em hospedagem estática como GitHub Pages, o backend `/api/nowplaying` não está disponível.
 
 ## 🔒 Segurança, CORS e Políticas de Áudio dos Navegadores
 

@@ -98,6 +98,27 @@
   overflow: hidden;
 }
 
+.drawer-track-artwork {
+  display: block;
+  width: 76px;
+  height: 76px;
+  margin: 10px auto 0;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+
+.drawer-track-artwork[hidden] { display: none; }
+
+.drawer-track-link {
+  display: inline-block;
+  margin-top: 7px;
+  color: var(--accent-cyan);
+  font-size: 11px;
+}
+
+.drawer-track-link[hidden] { display: none; }
+
 /* Centro: Controles Principais de Reprodução */
 .player-center {
   display: flex;

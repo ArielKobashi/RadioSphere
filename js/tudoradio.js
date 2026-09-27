@@ -6,6 +6,7 @@ class TuRadioCatalogClient {
     this.staticIndexPromise = null;
     this.staticCatalogAvailable = null;
     this.dbPromise = null;
+    this.paranaMunicipalitiesPromise = null;
   }
 
   _openDb() {
@@ -136,6 +137,81 @@ class TuRadioCatalogClient {
         .catch(error => { this.cityCache.delete(code); throw error; }));
     }
     return this.cityCache.get(code);
+  }
+
+  getParanaMunicipalities(options = {}) {
+    if (!this.paranaMunicipalitiesPromise) {
+      this.paranaMunicipalitiesPromise = this._loadParanaMunicipalities(options)
+        .finally(() => { this.paranaMunicipalitiesPromise = null; });
+    }
+    return this.paranaMunicipalitiesPromise;
+  }
+
+  async _loadParanaMunicipalities({ signal } = {}) {
+    const cacheKey = 'wrg_ibge_municipalities_PR_v1';
+    let saved = null;
+    let savedAt = 0;
+    try {
+      const cache = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+      saved = Array.isArray(cache) ? cache : cache?.municipalities;
+      savedAt = Number(cache?.savedAt) || 0;
+    } catch (_) { /* cache local opcional */ }
+    if (Array.isArray(saved) && saved.length >= 390 && Date.now() - savedAt < 30 * 24 * 60 * 60 * 1000) return saved;
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 14000);
+      const abort = () => controller.abort();
+      if (signal?.aborted) controller.abort();
+      else signal?.addEventListener('abort', abort, { once: true });
+      let municipalities;
+      try {
+        let lastError = null;
+        for (const url of [
+          'api/ibge/municipalities?uf=PR',
+          'https://servicodados.ibge.gov.br/api/v1/localidades/estados/41/municipios?orderBy=nome'
+        ]) {
+          try {
+            const response = await fetch(url, {
+              headers: { Accept: 'application/json' }, signal: controller.signal,
+              cache: url.startsWith('http') ? 'force-cache' : 'no-store'
+            });
+            if (!response.ok) throw new Error(`IBGE respondeu HTTP ${response.status}.`);
+            const data = await response.json();
+            municipalities = Array.isArray(data) ? data : data.municipalities;
+            if (Array.isArray(municipalities)) break;
+            throw new Error('O servidor não devolveu a lista municipal esperada.');
+          } catch (error) { lastError = error; }
+        }
+        if (!Array.isArray(municipalities)) throw lastError || new Error('Resposta inválida do IBGE.');
+      } finally {
+        clearTimeout(timeout);
+        signal?.removeEventListener('abort', abort);
+      }
+      if (!Array.isArray(municipalities) || municipalities.length < 390) throw new Error('A lista municipal do IBGE veio incompleta.');
+
+      let dialsCities = [];
+      try { dialsCities = (await this._staticIndex()).cities.filter(city => city.state === 'PR'); }
+      catch (_) { dialsCities = await this.getCities('PR', { signal }).catch(() => []); }
+      const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const dialsByName = new Map(dialsCities.map(city => [normalize(city.slug.replace(/^\d+-/, '').replace(/-[a-z]{2}$/i, '')), city]));
+      const result = municipalities.map(item => {
+        const name = String(item.nome || '').trim();
+        const dialsCity = dialsByName.get(normalize(name));
+        return {
+          id: String(item.id), ibgeCode: String(item.id), name,
+          slug: normalize(name).replace(/\s+/g, '-'), state: 'PR',
+          path: dialsCity?.path || '', dialsPath: dialsCity?.path || '',
+          source: 'IBGE'
+        };
+      });
+      try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), municipalities: result })); } catch (_) { /* lista permanece em memória */ }
+      return result;
+    } catch (error) {
+      if (Array.isArray(saved) && saved.length >= 390) return saved;
+      if (signal?.aborted) throw error;
+      throw new Error(`Não consegui carregar a lista oficial de municípios do Paraná: ${error.message}`);
+    }
   }
 
   async getCityStations(city, { signal, cache = true, forceRefresh = false } = {}) {

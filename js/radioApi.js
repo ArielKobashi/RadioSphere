@@ -32,6 +32,7 @@ class RadioApiClient {
     this.catalogPersistentCache = false;
     this.catalogStatus = { phase: 'idle', received: 0, total: null, complete: false, cached: false };
     this.radioCountriesPromise = null;
+    this.stateStationCache = new Map();
 
     // Headers recomendados pelas diretrizes da Radio Browser API
     this.requestHeaders = {
@@ -90,13 +91,13 @@ class RadioApiClient {
    * @param {Object} queryParams 
    * @returns {Promise<any>}
    */
-  async _fetchWithFailover(endpoint, queryParams = {}, externalSignal = null) {
+  async _fetchWithFailover(endpoint, queryParams = {}, externalSignal = null, { forceRefresh = false } = {}) {
     const queryString = new URLSearchParams(queryParams).toString();
     const cacheKey = `${endpoint}?${queryString}`;
 
     // Verificação de cache em memória
     const cached = this.cache.get(cacheKey);
-    if (cached && (Date.now() - cached.timestamp < this.cacheTtlMs)) {
+    if (cached && !forceRefresh && (Date.now() - cached.timestamp < this.cacheTtlMs)) {
       return cached.data;
     }
 
@@ -244,6 +245,7 @@ class RadioApiClient {
       name,
       country,
       countryCode,
+      state,
       tag,
       language,
       limit = 60,
@@ -252,7 +254,8 @@ class RadioApiClient {
       reverse = true,
       hasGeoOnly = true,
       preferHttps = true,
-      hideBroken = true,
+      hideBroken = false,
+      forceRefresh = false,
       signal = null
     } = options;
 
@@ -268,11 +271,12 @@ class RadioApiClient {
     if (name) queryParams.name = name.trim();
     if (country) queryParams.country = country.trim();
     if (countryCode) queryParams.countrycode = countryCode.trim().toUpperCase();
+    if (state) queryParams.state = state.trim();
     if (tag) queryParams.tag = tag.trim().toLowerCase();
     if (language) queryParams.language = language.trim().toLowerCase();
 
     try {
-      const rawStations = await this._fetchWithFailover('/json/stations/search', queryParams, signal);
+      const rawStations = await this._fetchWithFailover('/json/stations/search', queryParams, signal, { forceRefresh });
 
       if (!Array.isArray(rawStations) || rawStations.length === 0) {
         return [];
@@ -372,6 +376,31 @@ class RadioApiClient {
     const stations = [...unique.values()];
     onProgress({ countryCode: code, received: stations.length, pages, phase: signal?.aborted ? 'cancelled' : 'ready' });
     return stations;
+  }
+
+  async loadStateStations(state, { countryCode = 'BR', signal = null, onProgress = () => {}, maxPages = 50, forceRefresh = false } = {}) {
+    const stateName = String(state || '').trim();
+    if (!stateName) throw new Error('Informe o estado para consultar as rádios.');
+    const cacheKey = `${countryCode}:${stateName}`.toLocaleLowerCase();
+    const cached = this.stateStationCache.get(cacheKey);
+    if (cached && !forceRefresh && Date.now() - cached.savedAt < 30 * 60 * 1000) return cached.stations;
+
+    const stations = new Map();
+    const pageSize = 1000;
+    for (let page = 0; page < Math.max(1, maxPages); page += 1) {
+      if (signal?.aborted) throw new DOMException('Busca cancelada.', 'AbortError');
+      const results = await this.searchStations({
+        countryCode, state: stateName, limit: pageSize, offset: page * pageSize,
+        hasGeoOnly: false, hideBroken: false, preferHttps: false, order: 'name', reverse: false,
+        forceRefresh, signal
+      });
+      for (const station of results) stations.set(station.id, station);
+      onProgress({ state: stateName, received: stations.size, page: page + 1, phase: results.length < pageSize ? 'ready' : 'loading' });
+      if (results.length < pageSize) break;
+    }
+    const result = [...stations.values()];
+    this.stateStationCache.set(cacheKey, { stations: result, savedAt: Date.now() });
+    return result;
   }
 
   _openCatalogDb() {

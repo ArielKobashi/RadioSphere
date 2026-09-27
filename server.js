@@ -1,10 +1,8 @@
-// Servidor opcional: arquivos estáticos + proxy Shazam. A chave fica apenas no ambiente do servidor.
+// Servidor opcional: arquivos estáticos e proxy same-origin para Now Playing das rádios.
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const dns = require('node:dns/promises');
-const { spawn, spawnSync } = require('node:child_process');
-const { Readable } = require('node:stream');
 
 const root = __dirname;
 try {
@@ -15,11 +13,9 @@ try {
 } catch (_) { /* .env local é opcional. */ }
 const port = Number(process.env.PORT) || 8765;
 const host = process.env.HOST || '127.0.0.1';
-const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
-const rapidApiKey = process.env.RAPIDAPI_KEY || '';
-const identifyByIp = new Map();
 const tuRadioPageCache = new Map();
 const tuRadioProbeCache = new Map();
+const ibgeMunicipalityCache = new Map();
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
 
 function json(res, status, payload) {
@@ -178,6 +174,24 @@ async function loadTuRadioCities(uf) {
   return Array.from(cities.values()).sort((a, b) => a.slug.localeCompare(b.slug, 'pt-BR'));
 }
 
+async function loadIbgeMunicipalities(uf) {
+  const stateCode = String(uf || '').toUpperCase();
+  if (stateCode !== 'PR') throw new Error('Esta consulta municipal ainda está configurada para o Paraná.');
+  const cached = ibgeMunicipalityCache.get(stateCode);
+  if (cached && cached.expiresAt > Date.now()) return cached.municipalities;
+  const response = await fetch('https://servicodados.ibge.gov.br/api/v1/localidades/estados/41/municipios?orderBy=nome', {
+    headers: { Accept: 'application/json', 'User-Agent': 'WorldRadioGlobe/1.0' },
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!response.ok) throw new Error(`IBGE respondeu HTTP ${response.status}.`);
+  const raw = await response.json();
+  if (!Array.isArray(raw) || raw.length < 390) throw new Error('A lista municipal do IBGE veio incompleta.');
+  const municipalities = raw.map(item => ({ id: String(item.id), name: String(item.nome || '').trim(), state: 'PR' }))
+    .filter(item => item.id && item.name);
+  ibgeMunicipalityCache.set(stateCode, { municipalities, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
+  return municipalities;
+}
+
 async function loadTuRadioCity(cityIdSlug) {
   const cityKey = String(cityIdSlug || '').toLowerCase();
   if (!/^\d+-[a-z0-9-]+$/.test(cityKey)) throw new Error('Cidade Dials inválida.');
@@ -313,81 +327,8 @@ async function findStationNowPlaying(streamUrl) {
   return await readIcyTrack(safeUrl);
 }
 
-function capturePcm(streamUrl) {
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
-    fetchPublicUrl(streamUrl, { headers: { 'Icy-MetaData': '0', 'User-Agent': 'WorldRadioGlobe/1.0' }, signal: controller.signal })
-      .then(response => {
-        if (!response.ok || !response.body) throw new Error(`A rádio respondeu HTTP ${response.status}.`);
-        const decoder = spawn(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-t', '5', '-vn', '-ac', '1', '-ar', '44100', '-f', 's16le', '-acodec', 'pcm_s16le', 'pipe:1'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-        const chunks = [];
-        let bytes = 0;
-        let settled = false;
-        const finish = (error, buffer) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
-          controller.abort();
-          if (error) reject(error); else resolve(buffer);
-        };
-        decoder.stdout.on('data', chunk => {
-          bytes += chunk.length;
-          if (bytes > 500000) { decoder.kill(); return finish(new Error('Amostra de áudio passou do limite.')); }
-          chunks.push(chunk);
-          if (bytes >= 44100 * 2 * 4) decoder.kill();
-        });
-        let diagnostic = '';
-        decoder.stderr.on('data', chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-800); });
-        decoder.stdin.on('error', () => {});
-        decoder.on('error', error => finish(new Error(`FFmpeg indisponível: ${error.message}`)));
-        decoder.on('close', code => {
-          if (bytes < 44100 * 2) return finish(new Error(diagnostic || 'A estação não forneceu áudio decodificável.'));
-          finish(null, Buffer.concat(chunks));
-        });
-        Readable.fromWeb(response.body).pipe(decoder.stdin);
-      })
-      .catch(error => { clearTimeout(timeout); controller.abort(); reject(error); });
-  });
-}
-
-async function identify(req, res) {
-  if (!requestIsSameOrigin(req)) return json(res, 403, { error: 'Origem não autorizada.' });
-  if (!rapidApiKey) return json(res, 503, { error: 'Reconhecimento Shazam não configurado no servidor (RAPIDAPI_KEY ausente).' });
-  const ip = req.socket.remoteAddress || 'unknown';
-  const last = identifyByIp.get(ip) || 0;
-  if (Date.now() - last < 12000) return json(res, 429, { error: 'Aguarde 12 segundos antes de identificar outra faixa.' });
-  identifyByIp.set(ip, Date.now());
-  let body = '';
-  for await (const chunk of req) {
-    body += chunk;
-    if (body.length > 4096) return json(res, 413, { error: 'Pedido muito grande.' });
-  }
-  try {
-    const input = JSON.parse(body || '{}');
-    const streamUrl = await validateStreamUrl(input.streamUrl);
-    const pcm = await capturePcm(streamUrl);
-    const shazamResponse = await fetch('https://shazam.p.rapidapi.com/songs/v3/detect?locale=pt-BR&timezone=America%2FSao_Paulo&samplems=4000', {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain', 'X-RapidAPI-Key': rapidApiKey, 'X-RapidAPI-Host': 'shazam.p.rapidapi.com' },
-      body: pcm.toString('base64'), signal: AbortSignal.timeout(12000)
-    });
-    if (!shazamResponse.ok) return json(res, 502, { error: `Shazam/RapidAPI respondeu HTTP ${shazamResponse.status}.` });
-    const result = await shazamResponse.json();
-    const track = result.track || result.matches?.[0]?.track || null;
-    if (!track?.title) return json(res, 200, { track: null, reason: 'no-match' });
-    return json(res, 200, { track: { title: track.title, artist: track.subtitle || '', url: track.url || '', artwork: track.images?.coverarthq || track.images?.coverart || '' } });
-  } catch (error) {
-    return json(res, 502, { error: error.message || 'Falha no reconhecimento.' });
-  }
-}
-
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS' && req.url?.startsWith('/api/')) { res.writeHead(204, { 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
-  if (req.method === 'GET' && req.url === '/api/shazam/status') {
-    const check = spawnSync(ffmpeg, ['-version'], { windowsHide: true, stdio: 'ignore', timeout: 2500 });
-    return json(res, 200, { provider: 'Shazam via RapidAPI', configured: Boolean(rapidApiKey), ffmpeg: !check.error && check.status === 0 });
-  }
   if (req.method === 'POST' && req.url === '/api/nowplaying') {
     if (!requestIsSameOrigin(req)) return json(res, 403, { error: 'Origem não autorizada.' });
     let body = '';
@@ -404,6 +345,13 @@ const server = http.createServer(async (req, res) => {
       const cities = await loadTuRadioCities(params.get('uf'));
       return json(res, 200, { source: 'Tudo Rádio Dials', cities });
     } catch (error) { return json(res, 502, { error: error.message || 'Falha ao consultar cidades Dials.' }); }
+  }
+  if (req.method === 'GET' && req.url?.startsWith('/api/ibge/municipalities?')) {
+    try {
+      const params = new URL(req.url, 'http://localhost').searchParams;
+      const municipalities = await loadIbgeMunicipalities(params.get('uf'));
+      return json(res, 200, { source: 'IBGE', municipalities });
+    } catch (error) { return json(res, 502, { error: error.message || 'Falha ao consultar municípios do IBGE.' }); }
   }
   if (req.method === 'GET' && req.url?.startsWith('/api/tudoradio/city?')) {
     try {
@@ -422,7 +370,6 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, result);
     } catch (error) { return json(res, 200, { valid: false, reason: error.message || 'Falha ao validar stream.' }); }
   }
-  if (req.method === 'POST' && req.url === '/api/shazam/identify') return identify(req, res);
   if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'Método não permitido.' });
   const pathname = decodeURIComponent((req.url || '/').split('?')[0]);
   if (pathname.split('/').some(part => part.startsWith('.')) || pathname === '/server.js' || pathname.startsWith('/tests/')) return json(res, 404, { error: 'Não encontrado.' });

@@ -26,8 +26,8 @@ document.addEventListener('DOMContentLoaded', () => {
   window.visualizer = visualizer;
 
   // Metadados Now Playing
-  const metadataManager = new MetadataManager(window.appState);
-  metadataManager.setRecognitionProvider(new ShazamRecognitionProvider());
+  const metadataManager = new MusicRecognitionService(window.appState);
+  metadataManager.setRecognitionProvider(new AudDRecognitionProvider());
   window.metadataManager = metadataManager;
 
   // Registra Service Worker (PWA)
@@ -124,18 +124,37 @@ document.addEventListener('DOMContentLoaded', () => {
   const stationNameDisplay = document.getElementById('playerStationName');
   const stationNowPlaying = document.getElementById('playerNowPlaying');
   window.appState.subscribeKey('currentTrack', track => {
+    const recognitionNote = document.getElementById('drawerShazamNote');
+    const artwork = document.getElementById('drawerTrackArtwork');
+    const trackLink = document.getElementById('drawerTrackLink');
+    if (recognitionNote && track?.title) {
+      recognitionNote.textContent = `${track.method === 'acoustic' ? '🎵 Música identificada por áudio' : 'Faixa informada pela rádio'}: ${[track.artist, track.title].filter(Boolean).join(' — ')}${track.album ? ` · ${track.album}` : ''}${track.releaseDate ? ` · ${track.releaseDate}` : ''}${Number.isFinite(track.duration) ? ` · ${Math.floor(track.duration / 60)}:${String(Math.floor(track.duration % 60)).padStart(2, '0')}` : ''}${track.identifier ? ` · ID ${track.identifier}` : ''} · ${track.source || 'fonte não informada'}`;
+    } else if (recognitionNote && track?.status === 'SEARCHING') {
+      recognitionNote.textContent = track.method === 'acoustic' ? '🎙️ Analisando áudio da transmissão…' : '🎵 Identificando música…';
+    }
+    if (artwork) {
+      const safeArtwork = /^https?:\/\//i.test(track?.artwork || '') ? track.artwork : '';
+      artwork.src = safeArtwork;
+      artwork.hidden = !safeArtwork;
+    }
+    if (trackLink) {
+      const safeLink = /^https?:\/\//i.test(track?.url || '') ? track.url : '';
+      trackLink.href = safeLink || '#';
+      trackLink.hidden = !safeLink;
+    }
     if (!stationNowPlaying) return;
     if (track?.title) {
       const label = [track.artist, track.title].filter(Boolean).join(' — ');
-      stationNowPlaying.textContent = track.confidence === 'possible' ? `Possível faixa: ${label}` : label;
+      stationNowPlaying.textContent = `${track.method === 'acoustic' ? '♫ ' : ''}${label}`;
       stationNowPlaying.classList.add('has-track');
       stationNowPlaying.dataset.source = track.source || 'unknown';
+      stationNowPlaying.title = [track.album && `Álbum: ${track.album}`, track.releaseDate && `Data: ${track.releaseDate}`, track.timestamp && `Identificada: ${new Date(track.timestamp).toLocaleString('pt-BR')}`, `Fonte: ${track.source || 'desconhecida'}`, track.confidence != null && `Confiança técnica: ${track.confidence}`].filter(Boolean).join(' · ');
       updateRadioDiagnostics();
       return;
     }
     const playback = window.appState.getState().playbackState;
     stationNowPlaying.textContent = playback === 'PLAYING'
-      ? track?.status === 'SEARCHING' ? 'Buscando informações da faixa…' : 'Música não identificada'
+      ? track?.status === 'SEARCHING' ? '🎵 Identificando música…' : 'Não foi possível identificar esta música.'
       : '';
     stationNowPlaying.classList.remove('has-track');
     stationNowPlaying.dataset.source = 'unknown';
@@ -183,6 +202,10 @@ document.addEventListener('DOMContentLoaded', () => {
   let tuRadioLoadingCities = false;
   let tuRadioSelectedCityPath = '';
   let tuRadioCityStations = [];
+  let tuRadioBrowserCityStations = [];
+  let tuRadioParanaCityIndex = null;
+  let tuRadioParanaDialsIndex = null;
+  let tuRadioMunicipalityCounts = new Map();
   let tuRadioResults = new Map();
   let tuRadioNationalStations = [];
   let tuRadioSearchStations = [];
@@ -301,6 +324,98 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function normalizePlace(value) {
     return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
+  async function searchParanaStations({ onProgress = () => {}, forceRefresh = false } = {}) {
+    if (tuRadioParanaCityIndex && !forceRefresh) return tuRadioParanaCityIndex;
+    const cities = await tuRadioCatalog.getParanaMunicipalities();
+    const onStateProgress = status => onProgress(`Lendo Radio Browser: ${status.received.toLocaleString('pt-BR')} rádios do Paraná…`);
+    const stateQueries = await Promise.all([
+      radioApi.loadStateStations('Paraná', { countryCode: 'BR', forceRefresh, onProgress: onStateProgress }),
+      radioApi.loadStateStations('PR', { countryCode: 'BR', forceRefresh, onProgress: onStateProgress })
+    ]);
+    const candidates = new Map(stateQueries.flat().map(station => [station.id, station]));
+    const paranaBounds = { south: -27.0, north: -22.3, west: -55.0, east: -48.0 };
+    for (const station of [...(radioApi.catalogStations?.values?.() || []), ...allLoadedStations.values()]) {
+      if (String(station.countryCode || '').toUpperCase() !== 'BR' || !station.city) continue;
+      const state = normalizePlace(station.state);
+      const coordinatesInParana = station.hasValidCoords && station.lat >= paranaBounds.south && station.lat <= paranaBounds.north &&
+        station.lon >= paranaBounds.west && station.lon <= paranaBounds.east;
+      if (state.includes('parana') || state === 'pr' || coordinatesInParana) candidates.set(station.id, station);
+    }
+    const cityLookup = new Map(cities.map(city => [normalizePlace(city.name), city.name]));
+    const index = new Map(cities.map(city => [city.name, []]));
+    for (const station of candidates.values()) {
+      const stationCity = normalizePlace(String(station.city || '').split(/[,;/]/)[0]).replace(/\s+(?:pr|parana)$/, '');
+      const cityName = cityLookup.get(stationCity) || [...cityLookup].find(([municipality]) => stationCity.startsWith(`${municipality} `))?.[1];
+      if (!cityName) continue;
+      index.get(cityName).push(station);
+      if (station.hasValidCoords) rememberMapStation(station);
+    }
+    const dialsIndex = new Map(cities.map(city => [city.name, []]));
+    try {
+      const dialsCities = await tuRadioCatalog.getCities('PR');
+      let nextCity = 0;
+      let completedCities = 0;
+      const cityWorker = async () => {
+        while (nextCity < dialsCities.length) {
+          const city = dialsCities[nextCity++];
+          try {
+            const result = await tuRadioCatalog.getCityStations(city, { forceRefresh });
+            const name = city.slug.replace(/^\d+-/, '').replace(/-[a-z]{2}$/i, '').replace(/-/g, ' ');
+            const officialName = [...dialsIndex.keys()].find(item => normalizePlace(item) === normalizePlace(name));
+            if (officialName) dialsIndex.set(officialName, result.stations || []);
+          } catch (error) {
+            console.warn(`[App] Dials indisponível para ${city.slug}:`, error.message);
+          }
+          completedCities += 1;
+          onProgress(`Lendo Radio Browser e Dials: ${completedCities} de ${dialsCities.length} páginas de cidade…`);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(3, dialsCities.length) }, cityWorker));
+    } catch (error) {
+      console.warn('[App] Não consegui consultar o índice Dials do Paraná:', error.message);
+    }
+    tuRadioParanaCityIndex = index;
+    tuRadioParanaDialsIndex = dialsIndex;
+    tuRadioMunicipalityCounts = new Map([...index].map(([name, rows]) => [name, rows.length + (dialsIndex.get(name)?.length || 0)]));
+    searchManager.mergeCatalog([...index.values()].flat());
+    refreshGlobeStations();
+    return index;
+  }
+
+  async function showCityStationsOnMap(city, browserStations = [], dialsStations = [], center = null) {
+    cityDetailStations.forEach(item => allLoadedStations.delete(item.id));
+    cityDetailStations = [];
+    const dialsPath = city.dialsPath || (city.path?.startsWith('/dials/') ? city.path : '');
+    if (!center && dialsPath) {
+      await ensureDialsCityPin({ ...city, path: dialsPath }, dialsStations.length);
+      const cityId = dialsPath.split('/').pop();
+      center = allLoadedStations.get(`dials-city-${cityId}`) || null;
+    }
+    const dialsPins = center && Number.isFinite(Number(center.lat)) && Number.isFinite(Number(center.lon))
+      ? dialsStations.map((record, index) => {
+        const mapStation = tuRadioCatalog.toUnverifiedStation(record);
+        const distance = Math.min(2200, 120 + 105 * Math.sqrt(index + 1));
+        const angle = index * 2.399963229728653;
+        const latitude = Number(center.lat);
+        const longitude = Number(center.lon);
+        const lat = latitude + (Math.sin(angle) * distance / 111320);
+        const lonScale = Math.max(0.15, Math.cos(latitude * Math.PI / 180));
+        const lon = longitude + (Math.cos(angle) * distance / (111320 * lonScale));
+        return { ...mapStation, lat, lon, hasValidCoords: true, locationAccuracy: 'city', dialsApproximatePin: true };
+      }) : [];
+    cityDetailStations = [...dialsPins, ...browserStations.filter(item => item.hasValidCoords)];
+    cityDetailStations.forEach(item => allLoadedStations.set(item.id, item));
+    if (center?.id) allLoadedStations.delete(center.id);
+    globe.setClusteringEnabled(false);
+    syncClusteringControl();
+    refreshGlobeStations();
+    const focus = browserStations.find(item => item.hasValidCoords) || center || cityDetailStations[0];
+    if (focus && Number.isFinite(Number(focus.lat)) && Number.isFinite(Number(focus.lon))) {
+      globe.flyTo(Number(focus.lat), Number(focus.lon), 180000, 1.5);
+    }
+    return cityDetailStations.length;
   }
 
   async function renderDialsCityPins(cities, signal = null, onProgress = () => {}, geocodeMissing = true) {
@@ -560,7 +675,12 @@ document.addEventListener('DOMContentLoaded', () => {
       utilityPanelTitle.textContent = 'Catálogo Dials Brasil';
       btnOpenLibrary?.classList.remove('active');
       const stateOptions = brazilianStates.map(([code, name]) => `<option value="${code}" ${tuRadioSelectedUf === code ? 'selected' : ''}>${escape(name)} (${code})</option>`).join('');
-      const cityOptions = tuRadioCities.map(city => `<option value="${escape(city.path)}" ${tuRadioSelectedCityPath === city.path ? 'selected' : ''}>${escape(city.slug.replace(/^\d+-/, '').replace(/-/g, ' '))}</option>`).join('');
+      const cityOptions = tuRadioCities.map(city => {
+        const value = city.ibgeCode || city.path;
+        const name = city.name || city.slug.replace(/^\d+-/, '').replace(/-/g, ' ');
+        const count = tuRadioMunicipalityCounts.get(name);
+        return `<option value="${escape(value)}" ${tuRadioSelectedCityPath === value ? 'selected' : ''}>${escape(name)}${count == null ? '' : ` · ${count} rádios`}</option>`;
+      }).join('');
       const cityStationRows = tuRadioCityStations.map((station, index) => {
         const result = tuRadioResults.get(station.id);
         const busy = tuRadioBusy.has(station.id);
@@ -581,6 +701,10 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
         </article>`;
       }).join('');
+      const radioBrowserCityRows = tuRadioBrowserCityStations.map((station, index) => `<article class="library-station-card">
+        ${stationImage(station)}<span class="library-station-copy"><strong>${escape(station.name)}</strong><span>${escape([station.city, station.state, station.country, station.source].filter(Boolean).join(' · '))}</span><span>${escape([station.codec, station.bitrate ? `${station.bitrate} kbps` : '', station.lastCheckStatus === 'online' ? 'última checagem online' : 'stream ainda não verificado'].filter(Boolean).join(' · '))}</span></span>
+        <button class="library-play-btn" type="button" data-city-radio-play="${index}" aria-label="Reproduzir ${escape(station.name)}" ${station.streamUrl ? '' : 'disabled'}>▶</button>
+      </article>`).join('');
       const stateLabel = brazilianStates.find(([code]) => code === tuRadioSelectedUf)?.[1] || tuRadioSelectedUf;
       utilityPanelContent.innerHTML = `
         <p class="utility-intro">Use o catálogo Dials como validação de emissora, frequência e local. Depois o app verifica o stream direto; se falhar, procura uma transmissão correspondente no Radio Browser.</p>
@@ -592,10 +716,12 @@ document.addEventListener('DOMContentLoaded', () => {
           <label>Cidade<select id="dialsCitySelect" ${tuRadioCities.length ? '' : 'disabled'}><option value="">${tuRadioCities.length ? 'Selecione uma cidade' : 'Carregando cidades do estado…'}</option>${cityOptions}</select></label>
           <button class="utility-primary-btn" id="loadDialsCity" type="button" ${tuRadioSelectedCityPath ? '' : 'disabled'}>Carregar esta cidade</button>
         </div>
+        ${tuRadioSelectedUf === 'PR' ? `<div class="filter-actions"><button class="utility-primary-btn" id="scanParanaStations" type="button">${tuRadioParanaCityIndex ? 'Atualizar busca em todas as cidades do PR' : 'Pesquisar rádios nas 399 cidades do PR'}</button></div><p class="utility-note">Busca as rádios cadastradas para o Paraná e distribui os resultados por município do IBGE; as posições vêm do próprio diretório quando disponíveis.</p>` : ''}
         ${tuRadioProgress ? `<p class="filter-count" id="dialsLocalProgress" aria-live="polite">${escape(tuRadioProgress)}</p>` : ''}
         ${tuRadioCityStations.length ? `<p class="filter-count">${tuRadioCityStations.length.toLocaleString('pt-BR')} emissoras listadas em ${escape(tuRadioCityStations[0]?.receptionCity || stateLabel)} · primeiro o cadastro Dials, depois teste do áudio</p>
           <div class="filter-actions"><button class="utility-primary-btn" id="validateAllDials" type="button" ${tuRadioBatchController ? 'disabled' : ''}>Validar e buscar streams de todas</button>${tuRadioBatchController ? '<button class="utility-text-btn" id="cancelDialsBatch" type="button">Cancelar</button>' : ''}</div>
-          <div class="library-station-list">${cityStationRows}</div>` : '<p class="utility-note">Selecione uma cidade para consultar seu dial FM/AM completo. Os registros Dials são mantidos na lista mesmo quando não têm stream; só streams confirmados podem tocar ou aparecer no globo.</p>'}
+          <div class="library-station-list">${cityStationRows}</div>` : tuRadioBrowserCityStations.length ? '<p class="utility-note">Não há cadastro Dials encontrado nesta cidade; abaixo estão as emissoras do Radio Browser.</p>' : '<p class="utility-note">Selecione uma cidade para consultar os bancos. O catálogo Dials traz frequências e cadastros; o Radio Browser fornece streams e coordenadas quando disponíveis.</p>'}
+        ${tuRadioBrowserCityStations.length ? `<p class="filter-count">${tuRadioBrowserCityStations.length.toLocaleString('pt-BR')} streams encontrados no Radio Browser para esta cidade</p><div class="library-station-list">${radioBrowserCityRows}</div>` : ''}
         <a class="utility-text-btn" href="https://tudoradio.com/dials/estado/${tuRadioSelectedUf}" target="_blank" rel="noopener noreferrer">ABRIR PÁGINA ORIGINAL DO ESTADO</a>
         <button class="utility-text-btn" id="backToDialsFilters" type="button">Voltar aos filtros</button>`;
 
@@ -605,17 +731,37 @@ document.addEventListener('DOMContentLoaded', () => {
         tuRadioSelectedCityPath = '';
         tuRadioCities = [];
         tuRadioCityStations = [];
+        tuRadioBrowserCityStations = [];
+        tuRadioMunicipalityCounts = new Map();
         tuRadioProgress = `Carregando municípios e regiões de ${uf}…`;
         renderUtilityPanel('dials');
         try {
-          tuRadioCities = await tuRadioCatalog.getCities(uf);
-          const knownCity = uf === 'PR' ? tuRadioCities.find(city => /-cascavel$/i.test(city.path)) : null;
-          tuRadioSelectedCityPath = knownCity?.path || '';
-          tuRadioProgress = `${tuRadioCities.length.toLocaleString('pt-BR')} cidades Dials disponíveis em ${uf}.`;
+          tuRadioCities = uf === 'PR' ? await tuRadioCatalog.getParanaMunicipalities() : await tuRadioCatalog.getCities(uf);
+          const knownCity = uf === 'PR' ? tuRadioCities.find(city => normalizePlace(city.name || city.slug) === 'cascavel') : null;
+          tuRadioSelectedCityPath = knownCity ? knownCity.ibgeCode || knownCity.path : '';
+          tuRadioProgress = uf === 'PR'
+            ? `${tuRadioCities.length.toLocaleString('pt-BR')} municípios oficiais do IBGE carregados para o Paraná.`
+            : `${tuRadioCities.length.toLocaleString('pt-BR')} cidades Dials disponíveis em ${uf}.`;
         } catch (error) { tuRadioProgress = `Não consegui carregar as cidades de ${uf}: ${error.message}`; }
         tuRadioLoadingCities = false;
         renderUtilityPanel('dials');
       };
+      document.getElementById('scanParanaStations')?.addEventListener('click', async () => {
+        tuRadioProgress = 'Pesquisando no banco Radio Browser e associando cada rádio ao município…';
+        renderUtilityPanel('dials');
+        try {
+          const index = await searchParanaStations({ forceRefresh: true, onProgress: message => {
+            tuRadioProgress = message;
+            const node = document.getElementById('dialsBatchProgress');
+            if (node) node.textContent = message;
+          } });
+          const radioBrowserTotal = [...index.values()].reduce((sum, rows) => sum + rows.length, 0);
+          const dialsTotal = [...(tuRadioParanaDialsIndex?.values() || [])].reduce((sum, rows) => sum + rows.length, 0);
+          const covered = [...index.keys()].filter(name => index.get(name).length || tuRadioParanaDialsIndex?.get(name)?.length).length;
+          tuRadioProgress = `Busca concluída: ${radioBrowserTotal.toLocaleString('pt-BR')} rádios no Radio Browser e ${dialsTotal.toLocaleString('pt-BR')} registros Dials, distribuídos por ${covered} dos ${tuRadioCities.length} municípios do Paraná.`;
+        } catch (error) { tuRadioProgress = error.message; }
+        renderUtilityPanel('dials');
+      });
       document.getElementById('dialsStateSelect')?.addEventListener('change', event => loadCities(event.target.value));
       document.getElementById('dialsCitySelect')?.addEventListener('change', event => {
         tuRadioSelectedCityPath = event.target.value;
@@ -623,16 +769,29 @@ document.addEventListener('DOMContentLoaded', () => {
         renderUtilityPanel('dials');
       });
       document.getElementById('loadDialsCity')?.addEventListener('click', async () => {
-        const city = tuRadioCities.find(item => item.path === tuRadioSelectedCityPath);
+        const city = tuRadioCities.find(item => (item.ibgeCode || item.path) === tuRadioSelectedCityPath);
         if (!city) return;
-        tuRadioProgress = 'Lendo e validando os registros Dials…';
+        tuRadioCityStations = [];
+        tuRadioBrowserCityStations = [];
+        tuRadioProgress = `Buscando rádios de ${city.name || city.slug} nos bancos…`;
         renderUtilityPanel('dials');
         try {
-          const result = await tuRadioCatalog.getCityStations(city);
-          tuRadioCityStations = result.stations || [];
+          if (tuRadioSelectedUf === 'PR' && !tuRadioParanaCityIndex) await searchParanaStations();
+          tuRadioBrowserCityStations = tuRadioSelectedUf === 'PR'
+            ? tuRadioParanaCityIndex?.get(city.name) || [] : [];
+          tuRadioCityStations = tuRadioNationalStations.filter(item =>
+            item.state === city.state && [item.receptionCity, item.transmitterCity].some(value => normalizePlace(value) === normalizePlace(city.name || city.slug)));
+          if (!tuRadioCityStations.length && tuRadioSelectedUf === 'PR') {
+            tuRadioCityStations = tuRadioParanaDialsIndex?.get(city.name) || [];
+          }
+          const dialsPath = city.dialsPath || (city.path?.startsWith('/dials/') ? city.path : '');
+          if (dialsPath && !tuRadioCityStations.length) {
+            const result = await tuRadioCatalog.getCityStations({ ...city, path: dialsPath });
+            tuRadioCityStations = result.stations || [];
+          }
           tuRadioResults = new Map();
-          await ensureDialsCityPin(city, tuRadioCityStations.length);
-          tuRadioProgress = `${tuRadioCityStations.length.toLocaleString('pt-BR')} registros confirmados no catálogo Dials de ${result.city?.name || city.slug}.`;
+          await showCityStationsOnMap(city, tuRadioBrowserCityStations, tuRadioCityStations);
+          tuRadioProgress = `${tuRadioBrowserCityStations.length.toLocaleString('pt-BR')} rádios Radio Browser e ${tuRadioCityStations.length.toLocaleString('pt-BR')} registros Dials encontrados para ${city.name || city.slug}.`;
         } catch (error) { tuRadioProgress = `Não consegui carregar a cidade: ${error.message}`; }
         renderUtilityPanel('dials');
       });
@@ -675,6 +834,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       });
       document.getElementById('cancelDialsNational')?.addEventListener('click', () => tuRadioNationalController?.abort());
+      utilityPanelContent.querySelectorAll('[data-city-radio-play]').forEach(button => button.addEventListener('click', () => {
+        const station = tuRadioBrowserCityStations[Number(button.dataset.cityRadioPlay)];
+        if (!station?.streamUrl) return;
+        if (station.hasValidCoords) rememberMapStation(station);
+        displayStation(station, true);
+      }));
       const validateOne = async index => {
         const dialsStation = tuRadioCityStations[index];
         if (!dialsStation || tuRadioBusy.has(dialsStation.id)) return;
@@ -1199,18 +1364,27 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
       const targetName = normalize(failedStation.name);
+      const targetTokens = new Set(targetName.split(' ').filter(token => token.length > 1 && !['radio', 'fm', 'am', 'de', 'do', 'da'].includes(token)));
       const isSameArea = candidate => {
-        if (failedStation.hasValidCoords && candidate.hasValidCoords) return Utils.haversineDistance(failedStation.lat, failedStation.lon, candidate.lat, candidate.lon) <= 50;
+        if (failedStation.hasValidCoords && candidate.hasValidCoords) return Utils.haversineDistance(failedStation.lat, failedStation.lon, candidate.lat, candidate.lon) <= 80;
         const targetCity = normalize(failedStation.city);
         const candidateCity = normalize(candidate.city);
-        return targetCity ? targetCity === candidateCity : normalize(failedStation.state) === normalize(candidate.state);
+        if (targetCity && candidateCity) return targetCity === candidateCity || targetCity.includes(candidateCity) || candidateCity.includes(targetCity);
+        const targetState = normalize(failedStation.state);
+        const candidateState = normalize(candidate.state);
+        return Boolean(targetState && candidateState && (targetState === candidateState || targetState.includes(candidateState) || candidateState.includes(targetState)));
       };
-      const candidate = candidates.find(item => {
+      const rankedCandidates = candidates.map(item => {
         const name = normalize(item.name);
-        const sameName = name === targetName || name.includes(targetName) || targetName.includes(name);
+        const candidateTokens = name.split(' ').filter(token => targetTokens.has(token));
+        const overlap = candidateTokens.length / Math.max(targetTokens.size, 1);
+        const nameMatch = name === targetName || name.includes(targetName) || targetName.includes(name) || overlap >= 0.6;
         const url = String(item.streamUrl || '').trim().toLowerCase();
-        return item.id !== failedStation.id && item.streamUrl && url !== failedUrl && !failedStreamUrls.has(url) && sameName && isSameArea(item);
-      });
+        return { item, overlap, url, sameArea: isSameArea(item), nameMatch };
+      }).filter(result => result.item.id !== failedStation.id && result.item.streamUrl && result.url !== failedUrl &&
+        !failedStreamUrls.has(result.url) && result.nameMatch && result.sameArea)
+        .sort((a, b) => b.overlap - a.overlap || Number(b.item.isHttps) - Number(a.item.isHttps) || b.item.clickCount - a.item.clickCount);
+      const candidate = rankedCandidates[0]?.item;
       if (candidate) {
         failedStreamUrls.add(String(candidate.streamUrl).trim().toLowerCase());
         Utils.showToast(`Testando outro stream cadastrado para ${candidate.name}.`, 'info', 3000);
@@ -1436,7 +1610,9 @@ document.addEventListener('DOMContentLoaded', () => {
       </button>
 
       <button class="drawer-shazam-btn" id="drawerShazamBtn" type="button" ${station.hasStream ? '' : 'disabled'}>IDENTIFICAR MÚSICA</button>
-      <p class="drawer-shazam-note" id="drawerShazamNote">Lê o Now Playing da rádio; se não houver, tenta reconhecer um trecho de áudio.</p>
+      <img class="drawer-track-artwork" id="drawerTrackArtwork" alt="Capa da música identificada" hidden>
+      <a class="drawer-track-link" id="drawerTrackLink" target="_blank" rel="noopener noreferrer" hidden>ABRIR FAIXA</a>
+      <p class="drawer-shazam-note" id="drawerShazamNote" aria-live="polite">Reconhecimento acústico automático enquanto esta rádio estiver tocando. Metadados da estação são exibidos separadamente.</p>
       ${station.listenPageUrl ? `<a class="drawer-listen-btn" href="${Utils.escapeHtml(station.listenPageUrl)}" target="_blank" rel="noopener noreferrer">TENTAR OUVIR NO TUDO RÁDIO</a>` : ''}
 
       <details class="radio-debug"><summary>DEBUG RADIO</summary><div id="debugRadioDetails"></div></details>
@@ -1464,6 +1640,16 @@ document.addEventListener('DOMContentLoaded', () => {
     updateRadioDiagnostics();
 
     const drawerListenBtn = document.getElementById('drawerListenBtn');
+    const recognitionNote = document.getElementById('drawerShazamNote');
+    const diagnosticStationId = station.id;
+    metadataManager.recognitionProvider.status().then(status => {
+      if (currentStation?.id !== diagnosticStationId || !recognitionNote || status.configured && status.ffmpeg) return;
+      recognitionNote.textContent = !status.configured
+        ? 'Reconhecimento acústico indisponível: configure AUDD_API_TOKEN no servidor.'
+        : 'Reconhecimento acústico indisponível: FFmpeg não encontrado no servidor.';
+    }).catch(() => {
+      if (currentStation?.id === diagnosticStationId && recognitionNote) recognitionNote.textContent = 'Reconhecimento acústico requer o backend Node deste projeto.';
+    });
     drawerListenBtn?.addEventListener('click', () => {
       if (currentStation?.hasStream) audioPlayer.playStation(currentStation);
     });
@@ -1497,11 +1683,11 @@ document.addEventListener('DOMContentLoaded', () => {
       button.disabled = true;
       button.textContent = 'IDENTIFICANDO…';
       try {
-        if (note) note.textContent = 'Consultando metadata do stream; depois tenta reconhecimento de áudio se habilitado.';
+        if (note) note.textContent = '🎙️ Analisando áudio da transmissão…';
         const result = await metadataManager.identifyCurrentStation();
-        if (!result.ok) throw new Error(result.reason === 'no-match' ? 'Não encontrei a faixa: a rádio não enviou metadata e o reconhecimento de áudio não está configurado/disponível.' : result.reason || 'Faixa não identificada.');
+        if (!result.ok) throw new Error(result.reason === 'no-match' ? 'Não foi possível identificar esta música.' : result.reason || 'Não foi possível identificar esta música.');
         Utils.showToast(`${result.track.source}: ${result.track.artist ? `${result.track.artist} — ` : ''}${result.track.title}`, 'success', 4500);
-        if (note) note.textContent = `Identificada por ${result.track.source || 'metadata da rádio'}: ${result.track.artist ? `${result.track.artist} — ` : ''}${result.track.title}`;
+        if (note) note.textContent = `♫ ${[result.track.artist, result.track.title].filter(Boolean).join(' — ')}${result.track.album ? ` · ${result.track.album}` : ''}${result.track.releaseDate ? ` · ${result.track.releaseDate}` : ''} · ${result.track.source || 'AudD'}`;
       } catch (error) {
         if (note) note.textContent = error.message;
         Utils.showToast(error.message, 'error', 5000);
@@ -1541,7 +1727,14 @@ document.addEventListener('DOMContentLoaded', () => {
       ['HTTP atual', 'Não exposto pelo elemento de áudio do navegador'],
       ['Codec / bitrate', [currentStation.codec, currentStation.bitrate ? `${currentStation.bitrate} kbps` : ''].filter(Boolean).join(' · ') || 'Não informado'],
       ['Última verificação do diretório', streamState === 'unknown' ? 'Sem confirmação' : streamState === 'online' ? 'Online na última verificação' : 'Offline na última verificação'],
-      ['Metadata / Now Playing', track.title ? `${track.artist ? `${track.artist} — ` : ''}${track.title} · ${track.source} · ${track.confidence}` : 'Faixa não identificada'],
+      ['Metadata / Now Playing', track.title ? `${track.artist ? `${track.artist} — ` : ''}${track.title} · ${track.source}` : 'Faixa não identificada'],
+      ['Confiança técnica', track.confidence == null ? 'Não fornecida pelo provider' : String(track.confidence)],
+      ['Método de identificação', track.title ? (track.method === 'acoustic' ? 'Fingerprint acústico (AudD)' : 'Metadados publicados pela estação') : 'Aguardando identificação'],
+      ['Captura / buffer', `${metadataManager.acousticDiagnostics.capture} · trecho-alvo 8 s · backend FFmpeg`],
+      ['Provider / tentativas', `${metadataManager.acousticDiagnostics.provider} · ${metadataManager.acousticDiagnostics.attempts}`],
+      ['Tempo da solicitação acústica', metadataManager.acousticDiagnostics.lastDurationMs == null ? 'Ainda não medido' : `${metadataManager.acousticDiagnostics.lastDurationMs} ms`],
+      ['Tempo de captura / provider', `${metadataManager.acousticDiagnostics.captureMs ?? '—'} ms / ${metadataManager.acousticDiagnostics.providerMs ?? '—'} ms`],
+      ['Último diagnóstico acústico', metadataManager.acousticDiagnostics.lastError || 'Sem erro'],
       ['Áudio', `${state.playbackState} · readyState ${audio.readyState} · networkState ${audio.networkState}`],
       ['CORS', 'Acesso de metadata não medido; reprodução nativa preservada'],
       ['Latência', 'Não medida pelo navegador neste player'],
@@ -1553,45 +1746,42 @@ document.addEventListener('DOMContentLoaded', () => {
 
   globe.onStationSelect = async (station) => {
     if (station.isDialsCityHub) {
-      const city = [...tuRadioNationalCities, ...tuRadioCities].find(item => item.path === station.dialsCityPath);
+      let city = [...tuRadioNationalCities, ...tuRadioCities].find(item => item.path === station.dialsCityPath);
       if (city) {
+        if (city.state === 'PR') {
+          const municipalities = await tuRadioCatalog.getParanaMunicipalities().catch(() => []);
+          tuRadioCities = municipalities;
+          const officialCity = municipalities.find(item => item.dialsPath === city.path);
+          if (officialCity) city = { ...officialCity, ...city, name: officialCity.name, dialsPath: city.path };
+        }
         tuRadioSelectedUf = city.state;
-        tuRadioCities = tuRadioNationalCities.filter(item => item.state === city.state);
-        tuRadioSelectedCityPath = city.path;
+        if (city.state !== 'PR') tuRadioCities = tuRadioNationalCities.filter(item => item.state === city.state);
+        tuRadioSelectedCityPath = city.ibgeCode || city.path;
         cityDetailStations.forEach(item => allLoadedStations.delete(item.id));
         cityDetailStations = [];
-        const cityUrl = `https://tudoradio.com${city.path}`;
+        tuRadioBrowserCityStations = [];
+        const dialsPath = city.dialsPath || city.path;
+        const cityUrl = `https://tudoradio.com${dialsPath}`;
         tuRadioCityStations = tuRadioNationalStations.filter(item => item.cityPageUrl === cityUrl);
         tuRadioProgress = `Carregando as rádios de ${city.slug.replace(/^\d+-/, '').replace(/-/g, ' ')}…`;
         renderUtilityPanel('dials');
         try {
-          if (!tuRadioCityStations.length) {
-            const result = await tuRadioCatalog.getCityStations(city);
+          if (city.state === 'PR' && !tuRadioParanaCityIndex) await searchParanaStations();
+          const cityName = city.name || city.slug.replace(/^\d+-/, '').replace(/-/g, ' ');
+          const indexedCity = city.state === 'PR'
+            ? [...(tuRadioParanaCityIndex || [])].find(([name]) => normalizePlace(name) === normalizePlace(cityName)) : null;
+          tuRadioBrowserCityStations = indexedCity?.[1] || [];
+          if (!tuRadioCityStations.length && tuRadioParanaDialsIndex) {
+            const indexedDialsCity = [...tuRadioParanaDialsIndex].find(([name]) => normalizePlace(name) === normalizePlace(cityName));
+            tuRadioCityStations = indexedDialsCity?.[1] || [];
+          }
+          if (!tuRadioCityStations.length && dialsPath) {
+            const result = await tuRadioCatalog.getCityStations({ ...city, path: dialsPath });
             tuRadioCityStations = result.stations || [];
           }
           tuRadioResults = new Map();
-          const latitude = Number(station.lat);
-          const longitude = Number(station.lon);
-          const radiusMeters = 2200;
-          cityDetailStations = tuRadioCityStations.map((record, index) => {
-            const mapStation = tuRadioCatalog.toUnverifiedStation(record);
-            // Dials provides a city for most transmitters, not station GPS.
-            // Spread symbols slightly around the city center so every record
-            // has an individually clickable pin while preserving that caveat.
-            const distance = Math.min(radiusMeters, 120 + 105 * Math.sqrt(index + 1));
-            const angle = index * 2.399963229728653;
-            const lat = latitude + (Math.sin(angle) * distance / 111320);
-            const lonScale = Math.max(0.15, Math.cos(latitude * Math.PI / 180));
-            const lon = longitude + (Math.cos(angle) * distance / (111320 * lonScale));
-            return { ...mapStation, lat, lon, hasValidCoords: true, locationAccuracy: 'city', dialsApproximatePin: true };
-          });
-          cityDetailStations.forEach(item => allLoadedStations.set(item.id, item));
-          allLoadedStations.delete(station.id);
-          globe.setClusteringEnabled(false);
-          syncClusteringControl();
-          refreshGlobeStations();
-          globe.flyTo(latitude, longitude, 180000, 1.5);
-          tuRadioProgress = `${tuRadioCityStations.length.toLocaleString('pt-BR')} emissoras de ${city.slug.replace(/^\d+-/, '').replace(/-/g, ' ')}. Cada pin é separado; a posição é aproximada no centro da cidade.`;
+          await showCityStationsOnMap(city, tuRadioBrowserCityStations, tuRadioCityStations, { ...station, id: station.id });
+          tuRadioProgress = `${tuRadioBrowserCityStations.length.toLocaleString('pt-BR')} rádios Radio Browser e ${tuRadioCityStations.length.toLocaleString('pt-BR')} registros Dials em ${city.name || city.slug}. Pins Radio Browser usam coordenadas cadastradas; os Dials sem GPS ficam aproximados no centro da cidade.`;
         } catch (error) {
           tuRadioProgress = `Não consegui carregar as rádios desta cidade: ${error.message}`;
         }

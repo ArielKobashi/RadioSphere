@@ -20,10 +20,10 @@ class AudioRecognitionProvider {
   }
 }
 
-class MetadataManager {
+class MusicRecognitionService {
   constructor(appStateManager) {
     this.state = appStateManager || window.appState;
-    this.pollIntervalMs = 18000;
+    this.pollIntervalMs = 20000;
     this.timer = null;
     this.abortController = null;
     this.currentStation = null;
@@ -32,6 +32,7 @@ class MetadataManager {
     // Cache para evitar requisições redundantes
     this.lastDetectedRaw = '';
     this.consecutiveFailures = 0;
+    this.acousticDiagnostics = { provider: 'AudD', attempts: 0, lastDurationMs: null, captureMs: null, providerMs: null, lastError: '', capture: 'idle' };
 
     // Escuta mudanças de estado de reprodução
     if (this.state) {
@@ -76,7 +77,7 @@ class MetadataManager {
         rawTitle: '',
         source: 'none',
         status: 'SEARCHING',
-        confidence: 'unavailable',
+        confidence: null,
         timestamp: Date.now()
       }
     });
@@ -155,6 +156,8 @@ class MetadataManager {
       this.consecutiveFailures = 0;
       this._applyTrackUpdate(result);
     } else {
+      const visibleTrack = this.state.getState().currentTrack;
+      if (visibleTrack?.title && visibleTrack.method === 'acoustic') return;
       // Quando não há metadados, expõe com clareza: NUNCA inventa títulos falsos!
       this._applyFallbackLiveState(station);
     }
@@ -280,7 +283,24 @@ class MetadataManager {
    * Camada 3: Diretório Radio Browser / Contexto da Estação
    */
   async _queryLayer3Directory(station) {
-    // Se a estação tiver tags de gênero ricas ou programa ativo no nome
+    // Proxy same-origin consulta headers ICY e endpoints JSON sem depender do CORS da estação.
+    try {
+      const response = await fetch('/api/nowplaying', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stationId: station.id, streamUrl: station.streamUrl }),
+        signal: this.abortController?.signal, cache: 'no-store'
+      });
+      if (!response.ok) return null;
+      const payload = await response.json();
+      if (!payload.track?.title) return null;
+      return {
+        title: String(payload.track.title), artist: String(payload.track.artist || ''),
+        album: String(payload.track.album || ''), artwork: String(payload.track.artwork || ''),
+        url: String(payload.track.url || ''), rawTitle: [payload.track.artist, payload.track.title].filter(Boolean).join(' - '),
+        source: payload.source || payload.track.source || 'Metadata da rádio', method: 'metadata',
+        status: 'METADATA', confidence: null, timestamp: Date.now()
+      };
+    } catch (_) { /* API local ausente em publicação estática ou estação indisponível. */ }
     return null;
   }
 
@@ -289,38 +309,53 @@ class MetadataManager {
    */
   async _queryLayer4Provider(signal) {
     try {
-      const result = await this.recognitionProvider.identify({ station: this.currentStation, signal });
+      this.state?.setState({ currentTrack: { ...this.state.getState().currentTrack, status: 'SEARCHING', source: this.recognitionProvider.name || 'AudD' } });
+      const started = performance.now();
+      this.acousticDiagnostics.capture = 'capturing';
+      this.acousticDiagnostics.attempts++;
+      const result = await this.recognitionProvider.identify({ station: this.currentStation, signal, metadataFirst: false });
+      this.acousticDiagnostics.lastDurationMs = Math.round(performance.now() - started);
+      const diagnosticTimings = result?.diagnostics || this.recognitionProvider.lastDiagnostics;
+      this.acousticDiagnostics.captureMs = diagnosticTimings?.captureMs ?? null;
+      this.acousticDiagnostics.providerMs = diagnosticTimings?.providerMs ?? null;
+      this.acousticDiagnostics.capture = 'idle';
       if (result && result.title) {
         return {
           title: result.title,
           artist: result.artist || '',
+          album: result.album || '', artwork: result.artwork || '', releaseDate: result.releaseDate || '',
+          duration: result.duration ?? null, identifier: result.identifier || '', url: result.url || '',
           rawTitle: `${result.artist ? result.artist + ' - ' : ''}${result.title}`,
           source: result.source || 'provider',
           status: 'IDENTIFIED',
-          confidence: 'verified',
+          confidence: result.confidence ?? null,
+          method: result.method || 'acoustic',
           timestamp: Date.now()
         };
       }
-    } catch (_) {
-      // Falha no provedor
+      this.acousticDiagnostics.lastError = result?.reason === 'cooldown' ? '' : (result?.reason || 'no-match');
+    } catch (error) {
+      this.acousticDiagnostics.capture = 'idle';
+      this.acousticDiagnostics.lastError = error?.message || 'provider-error';
     }
     return null;
   }
 
-  /** Reconhecimento sob demanda: a captura só inicia após ação explícita do usuário. */
+  /** Reconhecimento acústico sob demanda pelo botão da estação. */
   async identifyCurrentStation() {
     if (!this.currentStation?.streamUrl || !this.recognitionProvider) {
       return { ok: false, reason: 'no-station' };
     }
+    this.acousticDiagnostics ||= { provider: this.recognitionProvider.name || 'AudD', attempts: 0, lastDurationMs: null, captureMs: null, providerMs: null, lastError: '', capture: 'idle' };
     this.abortController?.abort();
     this.abortController = new AbortController();
     const signal = this.abortController.signal;
     this.state?.setState({ currentTrack: {
-      title: '', artist: '', rawTitle: '', source: 'Shazam', status: 'SEARCHING',
-      confidence: 'unavailable', timestamp: Date.now()
+      title: '', artist: '', rawTitle: '', source: 'AudD', status: 'SEARCHING', method: 'acoustic',
+      confidence: null, timestamp: Date.now()
     } });
     try {
-      const result = await this.recognitionProvider.identify({ station: this.currentStation, signal });
+      const result = await this.recognitionProvider.identify({ station: this.currentStation, signal, force: true });
       if (signal.aborted) return { ok: false, reason: 'cancelled' };
       if (!result?.title) {
         this._applyFallbackLiveState(this.currentStation);
@@ -328,8 +363,13 @@ class MetadataManager {
       }
       this._applyTrackUpdate({
         title: result.title, artist: result.artist || '', rawTitle: result.rawTitle || '',
-        source: result.source || 'Reconhecimento de música', status: 'IDENTIFIED', confidence: 'verified', timestamp: Date.now()
+        album: result.album || '', artwork: result.artwork || '', releaseDate: result.releaseDate || '',
+        duration: result.duration ?? null, identifier: result.identifier || '', url: result.url || '',
+        source: result.source || 'AudD', method: result.method || 'acoustic', status: 'IDENTIFIED',
+        confidence: result.confidence ?? null, timestamp: Date.now()
       });
+      this.acousticDiagnostics.captureMs = result.diagnostics?.captureMs ?? null;
+      this.acousticDiagnostics.providerMs = result.diagnostics?.providerMs ?? null;
       return { ok: true, track: result };
     } catch (error) {
       if (!signal.aborted) this._applyFallbackLiveState(this.currentStation);
@@ -378,7 +418,8 @@ class MetadataManager {
       rawTitle: clean,
       source,
       status: source === 'provider' ? 'IDENTIFIED' : 'METADATA',
-      confidence,
+      confidence: null,
+      metadataQuality: confidence,
       timestamp: Date.now()
     };
   }
@@ -406,10 +447,11 @@ class MetadataManager {
       currentTrack: {
         title: '',
         artist: '',
+        album: '', artwork: '', releaseDate: '', duration: null, identifier: '', url: '', method: 'none',
         rawTitle: '',
         source: 'none',
         status: 'UNKNOWN',
-        confidence: 'unavailable',
+        confidence: null,
         timestamp: Date.now()
       }
     });
@@ -418,4 +460,5 @@ class MetadataManager {
 
 // Expõe globalmente
 window.AudioRecognitionProvider = AudioRecognitionProvider;
-window.MetadataManager = MetadataManager;
+window.MusicRecognitionService = MusicRecognitionService;
+window.MetadataManager = MusicRecognitionService;

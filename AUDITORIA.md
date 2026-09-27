@@ -149,17 +149,16 @@ Na rodada anterior, a aplicação foi conferida em 639×560: busca, painel, play
 
 Estações recebidas/válidas/offline/sem coordenadas/duplicadas, países, cidades, faixas com metadata e faixas identificadas não foram contados em um carregamento real do serviço durante esta auditoria. O código agora calcula as métricas sobre o catálogo paginado quando a fonte responder; “cidade” só conta campos de cidade presentes no registro, e regiões são caixas aproximadas. Nenhum desses campos deve ser preenchido com estimativas.
 
-## Complemento — Shazam, Brasil e troca de mapas
+## Complemento — reconhecimento acústico, Brasil e troca de mapas
 
 - A inicialização agora percorre as páginas de `countrycode=BR` até a página curta ou o limite de segurança; inclui rádios sem coordenadas no catálogo, põe os pins brasileiros primeiro e os protege da limpeza de memória usada por descobertas posteriores. Somente registros geolocalizados podem aparecer no mapa.
-- O painel da estação ganhou reconhecimento Shazam explícito sob demanda. O servidor Node captura quatro segundos, FFmpeg decodifica para PCM 44.1 kHz mono, e o servidor faz a chamada RapidAPI sem expor a chave ao navegador. Há limite de requisições e rejeição de URLs locais; `.env` fica excluído de versionamento e do servidor estático.
-- Para ativar o reconhecimento, ainda é necessário instalar FFmpeg e preencher `RAPIDAPI_KEY` de uma conta do endpoint Shazam/RapidAPI. Essa chave e o executável não estavam disponíveis para teste end-to-end, então o reconhecimento não foi confirmado aqui.
+- A rádio tocando consulta metadados ICY/JSON por proxy same-origin. Reconhecimento acústico externo foi removido; sem metadados publicados pela estação, a faixa permanece não identificada.
 - O seletor mantém as quatro camadas, força redesenho após trocar e persiste a seleção. Os tiles ainda dependem de acesso às fontes cartográficas; a camada visual não foi conferida no navegador nesta sessão.
 - Verificação de código: 24 testes unitários passaram em execução sequencial, mais `node --check` dos JavaScripts, do servidor Node e dos testes.
 
 ## Complemento — reconhecimento sem chave e filtro global
 
-- O botão agora consulta primeiro metadata ICY/StreamTitle e endpoints comuns de Icecast/AzuraCast por um endpoint same-origin do servidor Node. Isso identifica títulos que a estação realmente anuncia sem credencial; se não houver metadata, tenta o fallback acústico RapidAPI quando configurado.
+- A aplicação consulta primeiro metadata ICY/StreamTitle e endpoints comuns de Icecast/AzuraCast por um endpoint same-origin do servidor Node. Sem faixa publicada, o provider AudD recebe uma amostra acústica curta capturada pelo backend.
 - O seletor de país carrega `/json/countries`; ao aplicar um código, percorre as páginas daquele país e atualiza lista/busca/globo, em vez de filtrar somente a amostra local.
 - Em falha final de reprodução, a aplicação procura primeiro outra entrada da mesma rádio/localidade e também tenta confirmar o stream publicado no Dials. O endereço de Capital FM que validamos vem do próprio catálogo, sem URL inventada.
 - Verificação anterior: 27 testes unitários; consulte o complemento Dials abaixo para a validação mais recente.
