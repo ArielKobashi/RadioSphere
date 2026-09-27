@@ -392,18 +392,30 @@ class GlobeManager {
     clustering.minimumClusterSize = 3;
 
     clustering.clusterEvent.addEventListener((clusteredEntities, cluster) => {
-      cluster.label.show = false;
-      cluster.billboard.show = true;
+      cluster.label.show = true;
+      cluster.label.text = clusteredEntities.length > 99 ? '99+' : String(clusteredEntities.length);
+      cluster.label.font = 'bold 13px sans-serif';
+      cluster.label.fillColor = Cesium.Color.WHITE;
+      cluster.label.outlineColor = Cesium.Color.fromCssColorString('#07313D');
+      cluster.label.outlineWidth = 3;
+      cluster.label.showBackground = true;
+      cluster.label.backgroundColor = Cesium.Color.fromCssColorString('#07313D').withAlpha(0.92);
+      cluster.label.backgroundPadding = new Cesium.Cartesian2(7, 5);
+      cluster.billboard.show = false;
+      if (cluster.point) {
+        cluster.point.show = true;
+        cluster.point.pixelSize = 28;
+        cluster.point.color = Cesium.Color.fromCssColorString('#0C5665');
+        cluster.point.outlineColor = Cesium.Color.fromCssColorString('#7FF4FF');
+        cluster.point.outlineWidth = 3;
+      }
       cluster.billboard.id = {
         isCluster: true,
         count: clusteredEntities.length,
         entities: clusteredEntities
       };
-      cluster.billboard.image = this.getClusterCanvas(clusteredEntities.length);
-      cluster.billboard.verticalOrigin = Cesium.VerticalOrigin.CENTER;
-      cluster.billboard.horizontalOrigin = Cesium.HorizontalOrigin.CENTER;
-      cluster.billboard.width = 46;
-      cluster.billboard.height = 46;
+      cluster.label.id = cluster.billboard.id;
+      if (cluster.point) cluster.point.id = cluster.billboard.id;
     });
   }
 
@@ -418,34 +430,72 @@ class GlobeManager {
    */
   setStations(stations = []) {
     if (!Array.isArray(stations)) return;
+    const rectangle = this.camera?.computeViewRectangle(this.scene.globe.ellipsoid);
+    const visible = station => {
+      if (!station || typeof station.lat !== 'number' || typeof station.lon !== 'number') return false;
+      if (!rectangle) return true;
+      const latitude = Cesium.Math.toRadians(station.lat);
+      const longitude = Cesium.Math.toRadians(station.lon);
+      const latitudePadding = (rectangle.north - rectangle.south) * 0.08;
+      const south = Math.max(-Cesium.Math.PI_OVER_TWO, rectangle.south - latitudePadding);
+      const north = Math.min(Cesium.Math.PI_OVER_TWO, rectangle.north + latitudePadding);
+      const span = Math.abs(rectangle.east - rectangle.west);
+      const fullCircle = Math.PI * 2;
+      if (span >= fullCircle - 0.01) return latitude >= south && latitude <= north;
+      const longitudePadding = span * 0.08;
+      const normalizeLongitude = value => ((value + Math.PI) % fullCircle + fullCircle) % fullCircle - Math.PI;
+      const west = normalizeLongitude(rectangle.west - longitudePadding);
+      const east = normalizeLongitude(rectangle.east + longitudePadding);
+      const longitudeInside = west <= east
+        ? longitude >= west && longitude <= east
+        : longitude >= west || longitude <= east;
+      return latitude >= south && latitude <= north && longitudeInside;
+    };
+    const nextStations = new Map(stations
+      .filter(station => station && station.id != null && visible(station))
+      .map(station => [String(station.id), station]));
 
-    this.markersDataSource.entities.removeAll();
-    this.renderedStationsMap.clear();
+    // Keep entities that are still in view. Rebuilding the whole data source
+    // after every catalog page caused long pauses on slower GPUs.
+    for (const [id, entity] of this.renderedStationsMap) {
+      if (nextStations.has(id)) continue;
+      this.markersDataSource.entities.remove(entity);
+      this.renderedStationsMap.delete(id);
+    }
 
-    stations.forEach(station => {
-      if (!station || typeof station.lat !== 'number' || typeof station.lon !== 'number') return;
-
-      const isCurrentActive = (station.id === this.activeStationId);
+    for (const [id, station] of nextStations) {
+      const active = id === this.activeStationId;
+      const existing = this.renderedStationsMap.get(id);
+      if (existing) {
+        existing.stationData = station;
+        existing.name = station.name;
+        const currentPosition = existing.position?.getValue?.(Cesium.JulianDate.now());
+        const currentCartographic = currentPosition ? this.ellipsoid.cartesianToCartographic(currentPosition) : null;
+        if (!currentCartographic || Math.abs(Cesium.Math.toDegrees(currentCartographic.latitude) - station.lat) > 1e-6 ||
+            Math.abs(Cesium.Math.toDegrees(currentCartographic.longitude) - station.lon) > 1e-6) {
+          existing.position = Cesium.Cartesian3.fromDegrees(station.lon, station.lat, 20);
+        }
+        existing.point.color = active ? Cesium.Color.fromCssColorString('#F59E0B') : Cesium.Color.fromCssColorString('#43D9E6');
+        existing.point.pixelSize = active ? 15 : 11;
+        continue;
+      }
 
       const entity = this.markersDataSource.entities.add({
-        id: `station_${station.id}`,
+        id: `station_${id}`,
         name: station.name,
         position: Cesium.Cartesian3.fromDegrees(station.lon, station.lat, 20),
-        billboard: {
-          image: isCurrentActive ? this.activePinCanvas : this.normalPinCanvas,
-          verticalOrigin: Cesium.VerticalOrigin.CENTER,
-          horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
-          width: isCurrentActive ? 50 : 42,
-          height: isCurrentActive ? 50 : 42,
-          scale: isCurrentActive ? new Cesium.CallbackProperty(() => 1.04 + 0.08 * Math.sin(Date.now() / 260), false) : 1,
-          scaleByDistance: new Cesium.NearFarScalar(800, 1.3, 2.2e7, 0.42),
+        point: {
+          pixelSize: active ? 15 : 11,
+          color: active ? Cesium.Color.fromCssColorString('#F59E0B') : Cesium.Color.fromCssColorString('#43D9E6'),
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 2,
+          scaleByDistance: new Cesium.NearFarScalar(800, 1.2, 2.2e7, 0.65),
           distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 4.5e7)
         }
       });
-
       entity.stationData = station;
-      this.renderedStationsMap.set(station.id, entity);
-    });
+      this.renderedStationsMap.set(id, entity);
+    }
 
     if (this.activeStationId) {
       const activeEntity = this.renderedStationsMap.get(this.activeStationId);
@@ -463,11 +513,9 @@ class GlobeManager {
 
     if (this.activeStationId && this.renderedStationsMap.has(this.activeStationId)) {
       const prev = this.renderedStationsMap.get(this.activeStationId);
-      if (prev && prev.billboard) {
-        prev.billboard.image = this.normalPinCanvas;
-        prev.billboard.width = 42;
-        prev.billboard.height = 42;
-        prev.billboard.scale = 1;
+      if (prev?.point) {
+        prev.point.color = Cesium.Color.fromCssColorString('#43D9E6');
+        prev.point.pixelSize = 11;
       }
     }
 
@@ -475,11 +523,9 @@ class GlobeManager {
 
     if (this.renderedStationsMap.has(station.id)) {
       const cur = this.renderedStationsMap.get(station.id);
-      if (cur && cur.billboard) {
-        cur.billboard.image = this.activePinCanvas;
-        cur.billboard.width = 50;
-        cur.billboard.height = 50;
-        cur.billboard.scale = new Cesium.CallbackProperty(() => 1.04 + 0.08 * Math.sin(Date.now() / 260), false);
+      if (cur?.point) {
+        cur.point.color = Cesium.Color.fromCssColorString('#F59E0B');
+        cur.point.pixelSize = 15;
       }
     }
 
@@ -721,6 +767,18 @@ class GlobeManager {
         });
       }
     });
+  }
+
+  getCurrentView() {
+    const rect = this.camera.computeViewRectangle(this.scene.globe.ellipsoid);
+    if (!rect) return null;
+    return {
+      west: Cesium.Math.toDegrees(rect.west),
+      south: Cesium.Math.toDegrees(rect.south),
+      east: Cesium.Math.toDegrees(rect.east),
+      north: Cesium.Math.toDegrees(rect.north),
+      altitude: this.camera.positionCartographic.height
+    };
   }
 
   toggleLighting() {

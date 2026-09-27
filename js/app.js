@@ -52,6 +52,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let radioCountries = [];
   let radioCountriesPromise = null;
   let activeStationFilters = { country: '', state: '', language: '', genre: '', codec: '', minBitrate: '', database: '' };
+  let cityDetailStations = [];
 
   // 2. Elementos de Interface do Usuário (HUD)
   const hudUtcTime = document.getElementById('hudUtcTime');
@@ -239,7 +240,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // set used for UI filters. Union both so imported cached records keep their pins.
     const stations = new Map(radioApi.catalogStations || []);
     allLoadedStations.forEach((station, id) => stations.set(id, station));
-    return Array.from(stations.values()).filter(station => {
+    const filtered = Array.from(stations.values()).filter(station => {
       const matches = (value, filter) => !filter || String(value || '').toLowerCase().includes(filter.toLowerCase());
       if (filters.country && String(station.countryCode || station.country || '').toLowerCase() !== filters.country.toLowerCase() && String(station.country || '').toLowerCase() !== filters.country.toLowerCase()) return false;
       if (!matches(station.state, filters.state) || !matches(station.language, filters.language)) return false;
@@ -249,6 +250,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (filters.minBitrate && Number(station.bitrate || 0) < Number(filters.minBitrate)) return false;
       return true;
     });
+    const visibleIds = new Set(filtered.map(station => String(station.id)));
+    cityDetailStations.forEach(station => {
+      if (!visibleIds.has(String(station.id))) filtered.push(station);
+    });
+    return filtered;
   }
 
   function refreshGlobeStations() {
@@ -405,7 +411,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let mapRefreshTimer = null;
     const scheduleMapRefresh = () => {
       if (mapRefreshTimer) return;
-      mapRefreshTimer = setTimeout(() => { mapRefreshTimer = null; refreshGlobeStations(); }, 900);
+      mapRefreshTimer = setTimeout(() => { mapRefreshTimer = null; refreshGlobeStations(); }, 3000);
     };
     globalCatalogLoadingPromise = radioApi.loadGlobalCatalog({ onProgress: progress => {
       if (Array.isArray(progress.stations)) {
@@ -649,7 +655,6 @@ document.addEventListener('DOMContentLoaded', () => {
           });
           tuRadioNationalStations = result.stations;
           tuRadioSearchStations = result.stations.map(station => tuRadioCatalog.toUnverifiedStation(station));
-          tuRadioSearchStations.forEach(rememberMapStation);
           tuRadioNationalCities = result.cities;
           tuRadioNationalCachePresent = Boolean(result.persistent || result.cached);
           searchManager.mergeCatalog(tuRadioSearchStations);
@@ -1546,15 +1551,50 @@ document.addEventListener('DOMContentLoaded', () => {
     container.innerHTML = rows.map(([label, value]) => `<div class="radio-debug-row"><dt>${escape(label)}</dt><dd>${escape(String(value))}</dd></div>`).join('');
   }
 
-  globe.onStationSelect = (station) => {
+  globe.onStationSelect = async (station) => {
     if (station.isDialsCityHub) {
-      const city = tuRadioNationalCities.find(item => item.path === station.dialsCityPath);
+      const city = [...tuRadioNationalCities, ...tuRadioCities].find(item => item.path === station.dialsCityPath);
       if (city) {
         tuRadioSelectedUf = city.state;
         tuRadioCities = tuRadioNationalCities.filter(item => item.state === city.state);
         tuRadioSelectedCityPath = city.path;
-        tuRadioCityStations = tuRadioNationalStations.filter(item => item.cityPageUrl === `https://tudoradio.com${city.path}`);
-        tuRadioProgress = `${tuRadioCityStations.length.toLocaleString('pt-BR')} registros Dials em ${city.slug.replace(/^\d+-/, '').replace(/-/g, ' ')}. Pin aproximado no centro da cidade.`;
+        cityDetailStations.forEach(item => allLoadedStations.delete(item.id));
+        cityDetailStations = [];
+        const cityUrl = `https://tudoradio.com${city.path}`;
+        tuRadioCityStations = tuRadioNationalStations.filter(item => item.cityPageUrl === cityUrl);
+        tuRadioProgress = `Carregando as rádios de ${city.slug.replace(/^\d+-/, '').replace(/-/g, ' ')}…`;
+        renderUtilityPanel('dials');
+        try {
+          if (!tuRadioCityStations.length) {
+            const result = await tuRadioCatalog.getCityStations(city);
+            tuRadioCityStations = result.stations || [];
+          }
+          tuRadioResults = new Map();
+          const latitude = Number(station.lat);
+          const longitude = Number(station.lon);
+          const radiusMeters = 2200;
+          cityDetailStations = tuRadioCityStations.map((record, index) => {
+            const mapStation = tuRadioCatalog.toUnverifiedStation(record);
+            // Dials provides a city for most transmitters, not station GPS.
+            // Spread symbols slightly around the city center so every record
+            // has an individually clickable pin while preserving that caveat.
+            const distance = Math.min(radiusMeters, 120 + 105 * Math.sqrt(index + 1));
+            const angle = index * 2.399963229728653;
+            const lat = latitude + (Math.sin(angle) * distance / 111320);
+            const lonScale = Math.max(0.15, Math.cos(latitude * Math.PI / 180));
+            const lon = longitude + (Math.cos(angle) * distance / (111320 * lonScale));
+            return { ...mapStation, lat, lon, hasValidCoords: true, locationAccuracy: 'city', dialsApproximatePin: true };
+          });
+          cityDetailStations.forEach(item => allLoadedStations.set(item.id, item));
+          allLoadedStations.delete(station.id);
+          globe.setClusteringEnabled(false);
+          syncClusteringControl();
+          refreshGlobeStations();
+          globe.flyTo(latitude, longitude, 180000, 1.5);
+          tuRadioProgress = `${tuRadioCityStations.length.toLocaleString('pt-BR')} emissoras de ${city.slug.replace(/^\d+-/, '').replace(/-/g, ' ')}. Cada pin é separado; a posição é aproximada no centro da cidade.`;
+        } catch (error) {
+          tuRadioProgress = `Não consegui carregar as rádios desta cidade: ${error.message}`;
+        }
         renderUtilityPanel('dials');
       }
       return;
@@ -1625,6 +1665,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 10. Varredura por Viewport
   const handleViewportStations = Utils.debounce(async ({ west, south, east, north, altitude }) => {
+    refreshGlobeStations();
     if (altitude > 12000000) return;
 
     if (markerLoadingIndicator) markerLoadingIndicator.classList.add('visible');
@@ -1645,6 +1686,13 @@ document.addEventListener('DOMContentLoaded', () => {
   }, 750);
 
   globe.onViewChange = handleViewportStations;
+
+  document.getElementById('btnRefreshStations')?.addEventListener('click', () => {
+    const view = globe.getCurrentView?.();
+    if (view) handleViewportStations(view);
+    else refreshGlobeStations();
+    Utils.showToast('Pins da área visível atualizados.', 'info', 2000);
+  });
 
   // 11. Botão Sintonizar Estação Aleatória
   if (btnRandomStation) {
@@ -1735,6 +1783,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // 13. Demais Botões do HUD
   if (btnResetView) {
     btnResetView.addEventListener('click', () => {
+      cityDetailStations.forEach(item => allLoadedStations.delete(item.id));
+      cityDetailStations = [];
+      globe.setClusteringEnabled(localStorage.getItem('wrg_station_clustering') !== 'false');
+      syncClusteringControl();
+      refreshGlobeStations();
       globe.resetView(2);
       Utils.showToast('Visualização redefinida para órbita global.', 'info');
     });
