@@ -183,17 +183,18 @@ async function loadTuRadioCities(uf) {
 
 async function loadIbgeMunicipalities(uf) {
   const stateCode = String(uf || '').toUpperCase();
-  if (stateCode !== 'PR') throw new Error('Esta consulta municipal ainda está configurada para o Paraná.');
+  const stateNumbers = { AC: 12, AL: 27, AP: 16, AM: 13, BA: 29, CE: 23, DF: 53, ES: 32, GO: 52, MA: 21, MT: 51, MS: 50, MG: 31, PA: 15, PB: 25, PR: 41, PE: 26, PI: 22, RJ: 33, RN: 24, RS: 43, RO: 11, RR: 14, SC: 42, SP: 35, SE: 28, TO: 17 };
+  if (!Object.hasOwn(stateNumbers, stateCode)) throw new Error('Informe uma UF brasileira válida.');
   const cached = ibgeMunicipalityCache.get(stateCode);
   if (cached && cached.expiresAt > Date.now()) return cached.municipalities;
-  const response = await fetch('https://servicodados.ibge.gov.br/api/v1/localidades/estados/41/municipios?orderBy=nome', {
+  const response = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${stateNumbers[stateCode]}/municipios?orderBy=nome`, {
     headers: { Accept: 'application/json', 'User-Agent': 'WorldRadioGlobe/1.0' },
     signal: AbortSignal.timeout(12000)
   });
   if (!response.ok) throw new Error(`IBGE respondeu HTTP ${response.status}.`);
   const raw = await response.json();
-  if (!Array.isArray(raw) || raw.length < 390) throw new Error('A lista municipal do IBGE veio incompleta.');
-  const municipalities = raw.map(item => ({ id: String(item.id), name: String(item.nome || '').trim(), state: 'PR' }))
+  if (!Array.isArray(raw) || !raw.length) throw new Error('A lista municipal do IBGE veio incompleta.');
+  const municipalities = raw.map(item => ({ id: String(item.id), name: String(item.nome || '').trim(), state: stateCode }))
     .filter(item => item.id && item.name);
   ibgeMunicipalityCache.set(stateCode, { municipalities, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
   return municipalities;

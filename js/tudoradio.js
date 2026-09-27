@@ -7,6 +7,7 @@ class TuRadioCatalogClient {
     this.staticCatalogAvailable = null;
     this.dbPromise = null;
     this.paranaMunicipalitiesPromise = null;
+    this.municipalitiesPromises = new Map();
   }
 
   _openDb() {
@@ -139,16 +140,22 @@ class TuRadioCatalogClient {
     return this.cityCache.get(code);
   }
 
-  getParanaMunicipalities(options = {}) {
-    if (!this.paranaMunicipalitiesPromise) {
-      this.paranaMunicipalitiesPromise = this._loadParanaMunicipalities(options)
-        .finally(() => { this.paranaMunicipalitiesPromise = null; });
+  getMunicipalities(uf, options = {}) {
+    const code = String(uf || '').toUpperCase();
+    if (!/^(AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)$/.test(code)) {
+      return Promise.reject(new Error('Escolha uma UF brasileira válida.'));
     }
-    return this.paranaMunicipalitiesPromise;
+    if (!this.municipalitiesPromises.has(code)) {
+      const request = this._loadMunicipalities(code, options).finally(() => this.municipalitiesPromises.delete(code));
+      this.municipalitiesPromises.set(code, request);
+    }
+    return this.municipalitiesPromises.get(code);
   }
 
-  async _loadParanaMunicipalities({ signal } = {}) {
-    const cacheKey = 'wrg_ibge_municipalities_PR_v1';
+  getParanaMunicipalities(options = {}) { return this.getMunicipalities('PR', options); }
+
+  async _loadMunicipalities(code, { signal } = {}) {
+    const cacheKey = `wrg_ibge_municipalities_${code}_v1`;
     let saved = null;
     let savedAt = 0;
     try {
@@ -156,7 +163,7 @@ class TuRadioCatalogClient {
       saved = Array.isArray(cache) ? cache : cache?.municipalities;
       savedAt = Number(cache?.savedAt) || 0;
     } catch (_) { /* cache local opcional */ }
-    if (Array.isArray(saved) && saved.length >= 390 && Date.now() - savedAt < 30 * 24 * 60 * 60 * 1000) return saved;
+    if (Array.isArray(saved) && saved.length && Date.now() - savedAt < 30 * 24 * 60 * 60 * 1000) return saved;
 
     try {
       const controller = new AbortController();
@@ -168,8 +175,8 @@ class TuRadioCatalogClient {
       try {
         let lastError = null;
         for (const url of [
-          'api/ibge/municipalities?uf=PR',
-          'https://servicodados.ibge.gov.br/api/v1/localidades/estados/41/municipios?orderBy=nome'
+          `api/ibge/municipalities?uf=${code}`,
+          `https://servicodados.ibge.gov.br/api/v1/localidades/estados/${({ AC: 12, AL: 27, AP: 16, AM: 13, BA: 29, CE: 23, DF: 53, ES: 32, GO: 52, MA: 21, MT: 51, MS: 50, MG: 31, PA: 15, PB: 25, PR: 41, PE: 26, PI: 22, RJ: 33, RN: 24, RS: 43, RO: 11, RR: 14, SC: 42, SP: 35, SE: 28, TO: 17 })[code]}/municipios?orderBy=nome`
         ]) {
           try {
             const response = await fetch(url, {
@@ -188,11 +195,11 @@ class TuRadioCatalogClient {
         clearTimeout(timeout);
         signal?.removeEventListener('abort', abort);
       }
-      if (!Array.isArray(municipalities) || municipalities.length < 390) throw new Error('A lista municipal do IBGE veio incompleta.');
+      if (!Array.isArray(municipalities) || !municipalities.length) throw new Error('A lista municipal do IBGE veio vazia.');
 
       let dialsCities = [];
-      try { dialsCities = (await this._staticIndex()).cities.filter(city => city.state === 'PR'); }
-      catch (_) { dialsCities = await this.getCities('PR', { signal }).catch(() => []); }
+      try { dialsCities = (await this._staticIndex()).cities.filter(city => city.state === code); }
+      catch (_) { dialsCities = await this.getCities(code, { signal }).catch(() => []); }
       const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
       const dialsByName = new Map(dialsCities.map(city => [normalize(city.slug.replace(/^\d+-/, '').replace(/-[a-z]{2}$/i, '')), city]));
       const result = municipalities.map(item => {
@@ -200,7 +207,7 @@ class TuRadioCatalogClient {
         const dialsCity = dialsByName.get(normalize(name));
         return {
           id: String(item.id), ibgeCode: String(item.id), name,
-          slug: normalize(name).replace(/\s+/g, '-'), state: 'PR',
+          slug: normalize(name).replace(/\s+/g, '-'), state: code,
           path: dialsCity?.path || '', dialsPath: dialsCity?.path || '',
           source: 'IBGE'
         };
@@ -208,9 +215,9 @@ class TuRadioCatalogClient {
       try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), municipalities: result })); } catch (_) { /* lista permanece em memória */ }
       return result;
     } catch (error) {
-      if (Array.isArray(saved) && saved.length >= 390) return saved;
+      if (Array.isArray(saved) && saved.length) return saved;
       if (signal?.aborted) throw error;
-      throw new Error(`Não consegui carregar a lista oficial de municípios do Paraná: ${error.message}`);
+      throw new Error(`Não consegui carregar a lista oficial de municípios de ${code}: ${error.message}`);
     }
   }
 
@@ -408,21 +415,22 @@ class TuRadioCatalogClient {
       return { candidate, sameArea, hasFrequency, score, acceptable: sameArea && (exact || contains || overlap >= 0.6) };
     }).filter(item => item.acceptable).sort((a, b) => b.score - a.score).slice(0, maxCandidates);
 
+    const validAlternatives = [];
     for (const item of normalized) {
       if (signal?.aborted) throw new DOMException('Validação cancelada.', 'AbortError');
       const candidateUrl = String(item.candidate.streamUrl || '').trim().toLowerCase();
       if (excludeStreamUrls?.has(candidateUrl)) continue;
       const checked = await this.validateStream(item.candidate.streamUrl, { signal }).catch(() => ({ valid: false }));
       if (!checked.valid) continue;
-      return {
+      validAlternatives.push({
         ...item.candidate,
         streamUrl: checked.url || item.candidate.streamUrl, hasStream: true,
         isHttps: String(checked.url || item.candidate.streamUrl).startsWith('https://'),
         lastCheckOk: true, lastCheckStatus: 'online', lastCheckTime: new Date().toISOString(),
-        source: 'Tudo Rádio Dials + Radio Browser', streamValidation: checked
-      };
+        source: 'Radio Browser', streamValidation: checked
+      });
     }
-    return null;
+    return validAlternatives;
   }
 
   async validateAndResolve(dialsStation, radioApi, options = {}) {
@@ -433,6 +441,11 @@ class TuRadioCatalogClient {
       checked = { ...checked, valid: false, reason: 'Esse endereço já falhou durante esta sessão.' };
     }
     let station;
+    const excludeStreamUrls = new Set(options.excludeStreamUrls || []);
+    if (checked.valid) excludeStreamUrls.add(String(checked.url || dialsStation.streamUrl).trim().toLowerCase());
+    const alternatives = await this.findWorkingAlternative(dialsStation, radioApi, {
+      ...options, maxCandidates: options.maxCandidates ?? 3, excludeStreamUrls
+    }).catch(() => []);
     if (checked.valid) {
       station = {
         id: `tudoradio-${dialsStation.id}`, sourceId: dialsStation.id,
@@ -446,9 +459,7 @@ class TuRadioCatalogClient {
         lastCheckTime: new Date().toISOString(), nowPlaying: null, metadataAvailable: false,
         locationAccuracy: 'unknown', source: 'Tudo Rádio Dials', streamValidation: checked
       };
-    } else {
-      station = await this.findWorkingAlternative(dialsStation, radioApi, options);
-    }
+    } else station = alternatives[0] || null;
     if (station) {
       station = {
         ...station,
@@ -457,6 +468,10 @@ class TuRadioCatalogClient {
         dialsClassAndCallsign: dialsStation.classAndCallsign, dialsTechnical: dialsStation.technical,
         dialsValidated: true, dialsCity: dialsStation.receptionCity, listenPageUrl: dialsStation.listenPageUrl,
         dialsDetailsUrl: dialsStation.detailsUrl, dialsCityPageUrl: dialsStation.cityPageUrl,
+        streamCandidates: [
+          ...(checked.valid ? [{ url: checked.url || dialsStation.streamUrl, source: 'Tudo Rádio Dials', validated: true }] : []),
+          ...alternatives.map(item => ({ url: item.streamUrl, source: 'Radio Browser', validated: true }))
+        ],
         dialsSourceRecord: dialsStation
       };
       return { station, recordValid: true, streamValid: true, streamSource: checked.valid ? 'Tudo Rádio Dials' : 'Radio Browser', directCheck: checked };
