@@ -3,7 +3,7 @@
  * Estratégia de cache offline para App Shell PWA e navegação resiliente.
  */
 
-const CACHE_NAME = 'wrg-shell-v17';
+const CACHE_NAME = 'wrg-shell-v18';
 const APP_SHELL_ASSETS = [
   './',
   './index.html',
@@ -23,7 +23,7 @@ const APP_SHELL_ASSETS = [
   './js/audioVisualizer.js',
   './js/shazamIORecognitionProvider.js',
   './js/metadataManager.js',
-  './js/app.js?v=17',
+  './js/app.js?v=18',
   './data/anatel/parana-stations.json',
   './data/tudoradio/parana-directory.json',
   './data/radios-brasil/parana-terrestrial.json',

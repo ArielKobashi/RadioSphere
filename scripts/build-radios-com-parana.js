@@ -7,6 +7,22 @@ const input = path.join(root, 'data', 'radios-com-br', 'parana-am-fm.tsv');
 const output = path.join(root, 'data', 'radios-com-br', 'parana-am-fm.json');
 const sourceUrl = 'https://www.radios.com.br/radio/uf/parana/16/am-fm';
 const coordinateSourceUrl = 'https://geoftp.ibge.gov.br/cartas_e_mapas/mapas_municipais/colecao_de_mapas_municipais/2022/PR/sao_pedro_do_iguacu/A0_4125753_MM.pdf';
+const livePages = new Map([
+  ['Rádio Colméia 98.7 FM|Maringá', 'https://www.radios.com.br/aovivo/radio-colmeia-987-fm/8785'],
+  ['Rádio Evangelizar 99.5 FM|Curitiba', 'https://www.radios.com.br/aovivo/radio-evangelizar-995-fm/72767'],
+  ['Rádio TMC 100.3 FM|Curitiba', 'https://www.radios.com.br/aovivo/radio-tmc-1003-fm/8832'],
+  ['Rádio Clube 95.7 FM|Londrina', 'https://www.radios.com.br/aovivo/radio-clube-957-fm/199403'],
+  ['Rádio Vida FM Gospel 104.9|Andirá', 'https://www.radios.com.br/aovivo/radio-vida-fm-gospel-1049/14811'],
+  ['Rádio Banda B 89.7 FM|Curitiba', 'https://www.radios.com.br/aovivo/radio-banda-b-897-fm/10406'],
+  ['Rádio Elite 101.7 FM|Pato Branco', 'https://www.radios.com.br/aovivo/radio-elite-1017-fm/13057'],
+  ['Rádio Canoa Grande FM 87.7|Iguaraçu', 'https://www.radios.com.br/aovivo/radio-canoa-grande-fm-877/17443'],
+  ['93.3 FM Maringá|Maringá', 'https://www.radios.com.br/aovivo/933-fm-maringa/13310'],
+  ['Essência Gospel FM 96.7 FM|Foz do Iguaçu', 'https://www.radios.com.br/aovivo/essencia-gospel-fm-967-fm/13850'],
+  ['Nossa Rádio 91.7 FM|Bituruna', 'https://www.radios.com.br/aovivo/nossa-radio-917-fm/107305'],
+  ['Rádio 102.9 FM|Rio Branco do Sul', 'https://www.radios.com.br/aovivo/radio-1029-fm/35038'],
+  ['Rádio 104 FM|Cornélio Procópio', 'https://www.radios.com.br/aovivo/radio-104-fm/45'],
+  ['Rádio 104 FM|Cambará', 'https://www.radios.com.br/aovivo/radio-104-fm/39']
+]);
 
 if (!fs.existsSync(input)) throw new Error(`Arquivo fonte não encontrado: ${input}`);
 
@@ -42,7 +58,7 @@ const stations = rows.map(row => {
     country: 'Brasil',
     sourcePage: `${sourceUrl}?pg=${row.page - 1}`,
     homepage: null,
-    detailsUrl: null,
+    detailsUrl: livePages.get(`${row.name}|${row.city}`) || null,
     lat: null,
     lon: null,
     locationAccuracy: null,
@@ -52,6 +68,7 @@ const stations = rows.map(row => {
   if (row.name === 'Rádio Alvorada 105.9 FM' && row.city === 'São Pedro do Iguaçu' && row.frequency === 105.9) {
     Object.assign(station, {
       id: '9195',
+      detailsUrl: 'https://www.radios.com.br/aovivo/radio-alvorada-1059-fm/9195',
       homepage: 'http://www.alvoradafmsaopedro.com.br/',
       detailsUrl: 'https://www.radios.com.br/aovivo/radio-alvorada-1059-fm/9195',
       lat: -24.93,

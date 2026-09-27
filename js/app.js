@@ -190,6 +190,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const utilityPanelContent = document.getElementById('utilityPanelContent');
   let utilityMode = '';
   let catalogPageIndex = 0;
+  let stationFilterPageIndex = 0;
   let libraryTab = 'favorites';
   const brazilianStates = [
     ['AC', 'Acre'], ['AL', 'Alagoas'], ['AP', 'Amapá'], ['AM', 'Amazonas'], ['BA', 'Bahia'], ['CE', 'Ceará'], ['DF', 'Distrito Federal'],
@@ -268,25 +269,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function getFilteredStations() {
     const filters = activeStationFilters;
-    // The complete global catalog can be much larger than the small working
-    // set used for UI filters. Union both so imported cached records keep their pins.
-    const stations = new Map(radioApi.catalogStations || []);
-    allLoadedStations.forEach((station, id) => stations.set(id, station));
+    const stations = getFilterStationCatalog();
     const filtered = Array.from(stations.values()).filter(station => {
       const matches = (value, filter) => !filter || String(value || '').toLowerCase().includes(filter.toLowerCase());
       if (filters.country && String(station.countryCode || station.country || '').toLowerCase() !== filters.country.toLowerCase() && String(station.country || '').toLowerCase() !== filters.country.toLowerCase()) return false;
-      if (!matches(station.state, filters.state) || !matches(station.language, filters.language)) return false;
+      if (!stationMatchesState(station, filters.state) || !matches(station.language, filters.language)) return false;
       if (filters.database && !String(station.source || '').toLowerCase().includes(filters.database.toLowerCase())) return false;
       if (filters.genre && !(station.tags || []).some(tag => matches(tag, filters.genre))) return false;
       if (filters.codec && String(station.codec || '').toLowerCase() !== filters.codec.toLowerCase()) return false;
       if (filters.minBitrate && Number(station.bitrate || 0) < Number(filters.minBitrate)) return false;
       return true;
     });
-    const visibleIds = new Set(filtered.map(station => String(station.id)));
-    cityDetailStations.forEach(station => {
-      if (!visibleIds.has(String(station.id))) filtered.push(station);
-    });
     return filtered;
+  }
+
+  function brazilianStateCode(value) {
+    const normalized = normalizePlace(value);
+    return brazilianStates.find(([code, name]) => normalizePlace(code) === normalized || normalizePlace(name) === normalized)?.[0] || '';
+  }
+
+  function stationMatchesState(station, filter) {
+    if (!filter) return true;
+    const filterCode = brazilianStateCode(filter);
+    const stationCode = brazilianStateCode(station.stateCode || station.state || station.stateName || station.province);
+    if (filterCode && stationCode) return filterCode === stationCode;
+    const expected = normalizePlace(filter);
+    return [station.state, station.stateName, station.stateCode, station.province]
+      .some(value => normalizePlace(value) === expected);
   }
 
   function refreshGlobeStations() {
@@ -573,6 +582,30 @@ document.addEventListener('DOMContentLoaded', () => {
       lat: record.latitude,
       lon: record.longitude
     };
+  }
+
+  async function loadParanaFilterCatalog() {
+    const [stateIndex, dialsRows, radiosBrasilRows, radiosComRows, anatelRows, toledoRows] = await Promise.all([
+      searchStateStations('PR').catch(() => new Map()),
+      loadTudoRadioParanaDirectory().catch(() => []),
+      loadRadiosBrasilParana().catch(() => []),
+      loadRadiosComParana().catch(() => []),
+      loadAnatelParanaStations().catch(() => []),
+      loadBundledToledoStations({ state: 'PR', name: 'Toledo' }).catch(() => [])
+    ]);
+    const stations = [
+      ...[...stateIndex.values()].flat(),
+      ...dialsRows.map(toTudoRadioDirectoryRecord),
+      ...radiosBrasilRows.map(toRadiosBrasilRecord),
+      ...radiosComRows.map(toRadiosComRecord),
+      ...anatelRows.map(toAnatelDialsRecord),
+      ...toledoRows
+    ].map(record => tuRadioCatalog.toUnverifiedStation(record));
+    searchManager.mergeCatalog(stations);
+    stations.filter(station => station.hasValidCoords).forEach(rememberMapStation);
+    if (anatelRows.length) addAnatelParanaPins(anatelRows);
+    if (toledoRows.length) addBundledToledoPins(toledoRows);
+    return stations.length;
   }
 
   function addAnatelParanaPins(records) {
@@ -1032,6 +1065,28 @@ document.addEventListener('DOMContentLoaded', () => {
     return `<option value="">Todos</option>${values.map(value => `<option value="${escape(value)}" ${activeStationFilters[key] === value ? 'selected' : ''}>${escape(value)}</option>`).join('')}`;
   }
 
+  function stateFilterOptions() {
+    const options = new Map(brazilianStates.map(([code, name]) => [code, name]));
+    for (const station of allLoadedStations.values()) {
+      const rawState = station.stateCode || station.stateName || station.state || station.province;
+      if (!rawState) continue;
+      const code = station.countryCode === 'BR' ? brazilianStateCode(rawState) : '';
+      options.set(code || String(rawState), code ? brazilianStates.find(([uf]) => uf === code)[1] : String(rawState));
+    }
+    if (activeStationFilters.state && !options.has(activeStationFilters.state)) {
+      options.set(activeStationFilters.state, activeStationFilters.state);
+    }
+    return `<option value="">Todos</option>${[...options].sort((a, b) => a[1].localeCompare(b[1], 'pt-BR')).map(([value, label]) =>
+      `<option value="${escape(value)}" ${activeStationFilters.state === value ? 'selected' : ''}>${escape(label)}</option>`).join('')}`;
+  }
+
+  function getFilterStationCatalog() {
+    const stations = new Map(radioApi.catalogStations || []);
+    searchManager.catalog.forEach((station, id) => stations.set(id, station));
+    allLoadedStations.forEach((station, id) => stations.set(id, station));
+    return stations;
+  }
+
   function countryFilterOptions() {
     const choices = new Map();
     for (const station of allLoadedStations.values()) {
@@ -1056,13 +1111,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (mode === 'filters') {
       utilityPanelTitle.textContent = 'Filtrar estações';
-      const loaded = allLoadedStations.size;
-      const visible = getFilteredStations().length;
+      const loaded = getFilterStationCatalog().size;
+      const filteredStations = getFilteredStations();
+      const visible = filteredStations.length;
+      const filtersActive = Object.values(activeStationFilters).some(Boolean);
+      const filterPageSize = 40;
+      const filterPageCount = Math.max(1, Math.ceil(visible / filterPageSize));
+      stationFilterPageIndex = Math.min(stationFilterPageIndex, filterPageCount - 1);
+      const filterPageRows = filtersActive
+        ? [...filteredStations].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'pt-BR'))
+          .slice(stationFilterPageIndex * filterPageSize, (stationFilterPageIndex + 1) * filterPageSize)
+          .map(station => {
+            const location = [station.city, station.stateName || station.state, station.source,
+              station.hasValidCoords ? 'pin no mapa' : 'sem coordenada no mapa'].filter(Boolean).join(' · ');
+            const href = station.listenPageUrl || station.homepage;
+            const content = `${stationImage(station)}<span class="library-station-copy"><strong>${escape(station.name)}</strong><span>${escape(location)}</span></span>`;
+            return href
+              ? `<a class="library-station-card library-station-select filter-result-card" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${content}</a>`
+              : `<div class="library-station-card filter-result-card">${content}</div>`;
+          }).join('')
+        : '';
       utilityPanelContent.innerHTML = `
-        <p class="utility-intro">Escolha um país para carregar as rádios dele; os demais filtros refinam essa lista.</p>
+        <p class="utility-intro">Escolha país, estado ou banco de dados. Ao selecionar Paraná, o app carrega também os catálogos locais do estado.</p>
         <form id="stationFilterForm" class="station-filter-form">
           <label>País<select name="country">${countryFilterOptions()}</select></label>
-          <label>Cidade / região<select name="state">${filterOptions('state', station => station.state)}</select></label>
+          <label>Estado / região<select name="state">${stateFilterOptions()}</select></label>
           <label>Idioma<select name="language">${filterOptions('language', station => station.language)}</select></label>
           <label>Gênero<select name="genre">${filterOptions('genre', station => station.tags || [])}</select></label>
           <label>Codec<select name="codec">${filterOptions('codec', station => station.codec)}</select></label>
@@ -1070,8 +1143,10 @@ document.addEventListener('DOMContentLoaded', () => {
           <label>Bitrate mínimo<input name="minBitrate" type="number" min="0" max="1000" step="16" value="${escape(activeStationFilters.minBitrate)}" placeholder="Qualquer bitrate"></label>
           <div class="filter-actions"><button class="utility-primary-btn" type="submit">Aplicar filtros</button><button class="utility-text-btn" id="clearStationFilters" type="button">Limpar</button></div>
         </form>
-        <p class="filter-count" id="filterCount">${visible} de ${loaded} frequências carregadas</p>
-        <p class="utility-note">Ao aplicar um país, o app consulta todas as páginas disponíveis da fonte. Rádios sem coordenadas aparecem na lista e na busca, mas não como pins no mapa.</p>
+        <p class="filter-count" id="filterCount">${visible.toLocaleString('pt-BR')} de ${loaded.toLocaleString('pt-BR')} estações nos catálogos carregados</p>
+        ${filtersActive ? `<div class="library-station-list filter-results">${filterPageRows || '<p class="utility-note">Nenhuma estação corresponde aos filtros selecionados.</p>'}</div>
+          <div class="filter-results-pagination"><button class="utility-text-btn" id="filterResultsPrev" type="button" ${stationFilterPageIndex <= 0 ? 'disabled' : ''}>Anterior</button><span>Página ${stationFilterPageIndex + 1} de ${filterPageCount}</span><button class="utility-text-btn" id="filterResultsNext" type="button" ${stationFilterPageIndex >= filterPageCount - 1 ? 'disabled' : ''}>Próxima</button></div>` : ''}
+        <p class="utility-note">A lista inclui estações sem coordenadas. Só os registros com localização conhecida ou aproximada viram pins no mapa.</p>
         <button class="utility-text-btn" id="openTuRadioCatalog" type="button">🇧🇷 Consultar e validar o catálogo Dials do Brasil</button>
         <button class="utility-text-btn" id="openFullCatalog" type="button">🌍 Explorar todas as estações do catálogo</button>
         <details class="catalog-diagnostics"><summary>Cobertura e saúde do catálogo</summary><div id="globalCatalogDiagnostics"></div></details>`;
@@ -1083,7 +1158,13 @@ document.addEventListener('DOMContentLoaded', () => {
         event.preventDefault();
         const values = new FormData(form);
         activeStationFilters = Object.fromEntries(Object.keys(activeStationFilters).map(key => [key, String(values.get(key) || '').trim()]));
+        stationFilterPageIndex = 0;
         const countryCode = activeStationFilters.country;
+        if (brazilianStateCode(activeStationFilters.state) === 'PR') {
+          const submit = form.querySelector('[type="submit"]');
+          if (submit) { submit.disabled = true; submit.textContent = 'Carregando catálogos do Paraná…'; }
+          await loadParanaFilterCatalog();
+        }
         if (countryCode) {
           const submit = form.querySelector('[type="submit"]');
           if (submit) { submit.disabled = true; submit.textContent = 'Carregando estações…'; }
@@ -1104,8 +1185,17 @@ document.addEventListener('DOMContentLoaded', () => {
         refreshGlobeStations();
         renderUtilityPanel('filters');
       });
+      document.getElementById('filterResultsPrev')?.addEventListener('click', () => {
+        stationFilterPageIndex = Math.max(0, stationFilterPageIndex - 1);
+        renderUtilityPanel('filters');
+      });
+      document.getElementById('filterResultsNext')?.addEventListener('click', () => {
+        stationFilterPageIndex += 1;
+        renderUtilityPanel('filters');
+      });
       document.getElementById('clearStationFilters')?.addEventListener('click', () => {
         activeStationFilters = { country: '', state: '', language: '', genre: '', codec: '', minBitrate: '', database: '' };
+        stationFilterPageIndex = 0;
         refreshGlobeStations();
         renderUtilityPanel('filters');
       });
@@ -1160,7 +1250,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <div class="dials-station-actions">
             ${result?.streamValid ? `<button class="library-play-btn" type="button" data-dials-play="${index}" aria-label="Tocar ${escape(station.name)}">▶</button>${(result.station.streamCandidates || []).slice(1).map((candidate, candidateIndex) => `<button class="utility-text-btn" type="button" data-dials-stream="${index}" data-stream-index="${candidateIndex + 1}" title="${escape(candidate.url)}">LINK ${candidateIndex + 2}</button>`).join('')}` : ''}
             <button class="utility-text-btn" type="button" data-dials-validate="${index}" ${busy || tuRadioBatchController ? 'disabled' : ''}>${busy ? 'TESTANDO…' : result?.streamValid ? 'TESTAR DE NOVO' : 'VALIDAR E BUSCAR STREAM'}</button>
-            ${station.listenPageUrl ? `<a class="utility-text-btn" href="${escape(station.listenPageUrl)}" target="_blank" rel="noopener noreferrer">${station.source === 'Radios.com.br' ? (station.detailsUrl ? 'ABRIR FICHA NO RADIOS.COM.BR' : 'VER LISTA NO RADIOS.COM.BR') : 'OUVIR NO TUDO RÁDIO'}</a>` : ''}
+            ${station.listenPageUrl ? `<a class="utility-text-btn" href="${escape(station.listenPageUrl)}" target="_blank" rel="noopener noreferrer">${station.source === 'Radios.com.br' ? (station.dialsDetailsUrl || station.detailsUrl ? 'ABRIR TRANSMISSÃO NO RADIOS.COM.BR' : 'VER ESTAÇÃO NA LISTA DO RADIOS.COM.BR') : 'OUVIR NO TUDO RÁDIO'}</a>` : ''}
           </div>
         </article>`;
       }).join('');
@@ -2145,7 +2235,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <img class="drawer-track-artwork" id="drawerTrackArtwork" alt="Capa da música identificada" hidden>
       <a class="drawer-track-link" id="drawerTrackLink" target="_blank" rel="noopener noreferrer" hidden>ABRIR FAIXA</a>
       <p class="track-metadata-note" id="trackMetadataNote" aria-live="polite">Usa o Now Playing da rádio e, se ausente, analisa 8 s de áudio pelo ShazamIO. Sem API Key; requer Python, FFmpeg e internet.</p>
-      ${station.listenPageUrl ? `<a class="drawer-listen-btn" href="${Utils.escapeHtml(station.listenPageUrl)}" target="_blank" rel="noopener noreferrer">${station.source === 'Radios.com.br' ? (station.dialsDetailsUrl ? 'ABRIR FICHA NO RADIOS.COM.BR' : 'VER LISTA NO RADIOS.COM.BR') : 'TENTAR OUVIR NO TUDO RÁDIO'}</a>` : ''}
+      ${station.listenPageUrl ? `<a class="drawer-listen-btn" href="${Utils.escapeHtml(station.listenPageUrl)}" target="_blank" rel="noopener noreferrer">${station.source === 'Radios.com.br' ? (station.dialsDetailsUrl || station.detailsUrl ? 'ABRIR TRANSMISSÃO NO RADIOS.COM.BR' : 'VER ESTAÇÃO NA LISTA DO RADIOS.COM.BR') : 'TENTAR OUVIR NO TUDO RÁDIO'}</a>` : ''}
 
       <details class="radio-debug"><summary>DEBUG RADIO</summary><div id="debugRadioDetails"></div></details>
 

@@ -159,6 +159,10 @@
 .utility-text-btn { min-height: 40px; padding: 0 11px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-muted); cursor: pointer; }
 .utility-text-btn:hover { border-color: var(--border-subtle); color: var(--text-main); }
 .filter-count { padding-top: 12px; border-top: 1px solid var(--border-subtle); color: var(--accent-cyan); font: 10px var(--font-mono); }
+.filter-results { margin-top: 10px; max-height: 42vh; overflow: auto; }
+.filter-result-card { text-decoration: none; }
+.filter-results-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-muted); font-size: 11px; }
+.filter-results-pagination button:disabled { opacity: .45; cursor: default; }
 .catalog-pagination { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 10px 0; color: var(--text-dim); font: 10px var(--font-mono); }
 .catalog-pagination button, .catalog-load-controls button { min-height: 34px; }
 .catalog-pagination button:disabled, .catalog-load-controls button:disabled { opacity: .45; cursor: default; }
